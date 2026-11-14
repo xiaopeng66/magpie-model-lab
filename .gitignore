@@ -1,0 +1,11 @@
+node_modules/
+.test-data/
+.local-data/
+dist/
+screenshots/
+*.log
+*.tmp
+*.tgz
+.env
+.env.*
+docs/smoke-results.json

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>模型实验室</title>
+  <style>
+    :root { color-scheme: light; --bg: #f5f6fa; --card: #ffffff; --fg: #202636; --muted: #626d80; --line: #e0e5ef; --control-line: #7d899d; --accent: #435bc4; --soft: #edf1ff; scrollbar-gutter: stable; overflow-y: auto; }
+    @media (prefers-color-scheme: dark) { :root { color-scheme: dark; --bg: #141720; --card: #1d222e; --fg: #ecf0fa; --muted: #aab5ca; --line: #374154; --control-line: #74819a; --accent: #b5c4ff; --soft: #2b385b; } }
+    * { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--control-line) transparent; }
+    @supports selector(::-webkit-scrollbar) {
+      * { scrollbar-width: auto; scrollbar-color: auto; }
+      ::-webkit-scrollbar { width: 6px; height: 6px; }
+      ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+      ::-webkit-scrollbar-thumb { border-radius: 999px; background: var(--control-line); }
+      ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+      ::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+    }
+    body { min-height: 100vh; min-height: 100dvh; margin: 0; padding: 20px; display: grid; place-items: center; background: var(--bg); color: var(--fg); font: 12px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; }
+    main { width: min(100%, 300px); padding: 24px; text-align: center; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
+    .mark { display: grid; place-items: center; width: 48px; height: 48px; margin: 0 auto 14px; border-radius: 15px; background: var(--soft); color: var(--accent); }
+    .mark img { width: 44px; height: 44px; object-fit: contain; }
+    h1 { font-size: 16px; font-weight: 600; margin: 0 0 8px; }
+    p { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+    button { min-height: 30px; margin-top: 12px; padding: 5px 12px; border: 1px solid var(--accent); border-radius: 8px; background: var(--soft); color: var(--accent); font: inherit; cursor: pointer; }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    button:hover { background: var(--card); }
+    @media (pointer: coarse) { button { min-height: 44px; } }
+  </style>
+  <script src="_magpie/bridge.js"></script><script src="boot.js" defer></script>
+</head>
+<body><main><span class="mark"><img src="icon.png" width="44" height="44" alt=""></span><h1>模型实验室</h1><p id="status" role="status">正在连接…</p></main></body>
+</html>

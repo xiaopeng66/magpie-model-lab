@@ -1,0 +1,428 @@
+/* Shared favorites use the same saved runs and preview components as the test pages. */
+"use strict";
+globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, api, models, runs, modelLabel, when, active, makeUsage, renderUsage, mount, updateRun, isVisible }) {
+  const labels = { candy: "糖果", pelican: "动画" }, candyCards = new Map(), animationRows = new Map(), pendingActions = new WeakSet(), pendingPlans = new Set();
+  let state = { favorites: [], plans: [], enabled: true, concurrency: 3 }, supported = false, kind = "candy", page = 0, opener = null, drawerVersion = 0, refreshTask = null, refreshAgain = false;
+  let fieldNumber = 0, recordUsage = null;
+  const post = (path, body) => api(path, { method: "POST", body: JSON.stringify(body) });
+  const status = (message, panel = false, tone = "error") => { const target = $(panel ? "drawer-status" : "favorite-status"); text(target, message); target.hidden = !message; target.dataset.tone = tone; };
+  const filtered = () => state.favorites.filter(f => !$("favorite-provider").value || f.provider === $("favorite-provider").value);
+  const titleOf = favorite => modelLabel({ id: favorite.modelId, name: favorite.modelName, provider: favorite.provider, providerName: favorite.providerName }, false);
+  const verdictOf = run => run.status === "completed" ? run.candy?.verdict || "review" : "incomplete";
+  const verdictLabel = run => active(run) ? run.status === "running" ? "生成中" : "排队中" : ({ match: "答案 21", mismatch: `答案 ${run.candy?.answer}`, review: "待复核", incomplete: ({ error: "请求失败", cancelled: "已取消", interrupted: "已中断", truncated: "已截断" })[run.status] || "未完成" })[verdictOf(run)];
+  const tokenLabel = value => value === 0 ? "不设输出上限" : `${value ?? 64000} Token`;
+  const planOf = favorite => state.plans.find(plan => plan.favoriteIds[0] === favorite.id && plan.kinds[0] === kind);
+  const phaseLabel = { waiting: "待运行", paused: "已暂停", missed: "已错过", skipped: "已跳过", started: "结果已清理", error: "请求失败" };
+  function recordsFor(favorite, plan, indexed) {
+    return (plan?.today?.slots || []).map(slot => {
+      const candidate = (slot.runId ? runs.get(slot.runId) : null) || indexed.get(slot.key);
+      const run = candidate?.favoriteId === favorite.id && candidate.kind === kind ? candidate : null;
+      return { ...slot, run, verdict: run ? active(run) ? run.status : verdictOf(run) : slot.state,
+        labelText: `${slot.label} · ${run ? verdictLabel(run) : phaseLabel[slot.state] || "待运行"}${slot.reason ? ` · ${slot.reason}` : ""}` };
+    });
+  }
+
+  async function perform(control, callback, panel = false) {
+    if (control.disabled || pendingActions.has(control)) return;
+    const version = drawerVersion; pendingActions.add(control); control.disabled = true; control.setAttribute("aria-busy", "true"); status("", panel);
+    try { await callback(version); } catch (error) { if (!panel || version === drawerVersion) status(error.message, panel); }
+    finally { pendingActions.delete(control); control.removeAttribute("aria-busy"); control.disabled = false; control.refreshDisabled?.(); }
+  }
+  function action(label, callback, className = "quiet", panel = true) {
+    const control = button(label, () => perform(control, callback, panel), className); return control;
+  }
+  function field(label, type, value) {
+    const row = node("label", "editor-field"), control = node(type === "textarea" ? "textarea" : "input");
+    if (type !== "textarea") control.type = type;
+    control.value = value ?? ""; if (type === "number") { control.min = "1"; control.step = "1"; }
+    control.id = `favorite-field-${++fieldNumber}`; row.setAttribute("for", control.id); row.append(node("span", "help", label), control); return { row, control };
+  }
+  function selectField(label, values, value) {
+    const row = node("label", "editor-field"), control = node("select"); control.setAttribute("aria-label", label);
+    for (const [id, name] of values) { const option = node("option", "", name); option.value = id; control.append(option); }
+    control.value = value; row.append(node("span", "help", label), control); return { row, control };
+  }
+  function check(label, checked, change) {
+    const row = node("label", "check-row"), control = node("input"); control.type = "checkbox"; control.checked = Boolean(checked);
+    control.setAttribute("aria-label", label); if (change) control.addEventListener("change", () => change(control.checked));
+    row.append(control, node("span", "", label)); return { row, control };
+  }
+
+  function closeDrawer() {
+    if ($("favorite-drawer").hidden) return;
+    drawerVersion++; recordUsage = null; $("favorite-drawer").hidden = true; $("drawer-content").replaceChildren(); status("", true);
+    delete document.documentElement.dataset.drawerOpen;
+    const app = document.querySelector("main.app"); if (app) app.inert = false;
+    const target = opener?.isConnected && !opener.disabled ? opener : $("favorite-add"); target.focus(); opener = null;
+  }
+  function openDrawer(title, origin) {
+    if ($("favorite-drawer").hidden) opener = origin || document.activeElement || $("favorite-add");
+    drawerVersion++; recordUsage = null; $("drawer-content").scrollTop = 0;
+    text($("drawer-title"), title); $("drawer-content").replaceChildren(); status("", true); $("favorite-drawer").hidden = false;
+    document.documentElement.dataset.drawerOpen = "true";
+    const app = document.querySelector("main.app"); if (app) app.inert = true;
+    $("drawer-close").focus(); return $("drawer-content");
+  }
+  for (const id of ["drawer-close", "drawer-backdrop"]) $(id).addEventListener("click", closeDrawer);
+  $("favorite-drawer").addEventListener("keydown", event => {
+    if (event.key === "Escape") { event.preventDefault(); closeDrawer(); }
+    if (event.key === "Tab") {
+      const controls = [...($("favorite-drawer").querySelectorAll?.('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, a[href], [tabindex]') || [])].filter(item => item.getClientRects?.().length && !item.disabled && item.getAttribute("tabindex") !== "-1");
+      const first = controls[0], last = controls.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    }
+  });
+
+  async function refresh() {
+    if (!supported) return;
+    if (refreshTask) { refreshAgain = true; return refreshTask; }
+    refreshTask = (async () => {
+      do { refreshAgain = false; state = await api("api/favorites"); render(); } while (refreshAgain);
+    })().catch(error => status(error.message)).finally(() => { refreshTask = null; });
+    return refreshTask;
+  }
+  function daysLabel(days) {
+    const value = [...days].sort().join("");
+    return value === "0123456" ? "每天" : value === "12345" ? "工作日" : value === "06" ? "周末" : `周${days.map(day => "日一二三四五六"[day]).join("、")}`;
+  }
+  function cardHeading(favorite) {
+    const header = node("div", "favorite-card-header"), names = node("div", "card-model"), title = node("h3", "", titleOf(favorite));
+    const provider = node("p", "card-provider"), targetKind = kind; names.append(title, provider);
+    const settings = iconButton("settings", `设置 ${titleOf(favorite)} 的${labels[targetKind]}计划`, () => { const current = state.favorites.find(f => f.id === favorite.id); if (current) planEditor(current, settings); });
+    header.append(names, settings);
+    header.update = value => {
+      text(title, titleOf(value)); title.title = `${titleOf(value)}\n${value.modelId}`; text(provider, value.providerName || value.provider); provider.title = provider.textContent;
+      settings.setAttribute("aria-label", `设置 ${titleOf(value)} 的${labels[targetKind]}计划`); settings.title = settings.getAttribute("aria-label");
+    }; header.update(favorite);
+    return header;
+  }
+  function planControls(favorite, plan) {
+    const row = node("div", "card-schedule"), label = node("span", "card-plan-summary"), targetKind = kind;
+    const toggle = action("", async () => {
+      const current = row.plan; if (!current || pendingPlans.has(current.id)) return;
+      pendingPlans.add(current.id);
+      try { await post("api/schedules/save", { id: current.id, enabled: !current.enabled }); await refresh(); }
+      finally { pendingPlans.delete(current.id); render(); }
+    }, "switch", false);
+    toggle.append(node("span")); row.append(label, toggle);
+    row.update = (current, value = favorite) => {
+      favorite = value;
+      row.plan = current;
+      const summary = !current ? "暂无计划" : current.migrationReason ? "需要重新设置" : current.mode === "times" ? current.times.join(" · ") : `每 ${current.intervalMinutes} 分钟 · ${current.allDay ? "全天" : `${current.start}–${current.end}`}`;
+      text(label, summary); label.title = current ? `${daysLabel(current.days)} · ${current.timeZone}\n${summary}${current.migrationReason ? `\n${current.migrationReason}` : ""}` : summary;
+      toggle.hidden = !current; toggle.disabled = !current || Boolean(current.migrationReason) || pendingPlans.has(current.id) || pendingActions.has(toggle);
+      toggle.setAttribute("aria-pressed", String(Boolean(current?.enabled)));
+      toggle.setAttribute("aria-label", `${current?.enabled ? "暂停" : "启用"} ${titleOf(favorite)} 的${labels[targetKind]}计划`);
+      toggle.title = current?.enabled ? "暂停计划，已开始的请求继续完成" : "启用此模型的计划";
+    };
+    toggle.refreshDisabled = () => row.update(row.plan); row.update(plan);
+    return row;
+  }
+  function candyCard(favorite) {
+    const root = node("article", "favorite-candy-card"), metric = node("div", "candy-metric"), ratio = node("strong", "candy-ratio"), summary = node("span", "help");
+    const schedule = planControls(favorite), bars = node("div", "candy-bars"), foot = node("div", "favorite-card-foot"), date = node("span"), stateLabel = node("span");
+    metric.append(ratio, summary); foot.append(date, stateLabel);
+    bars.setAttribute("role", "group"); bars.setAttribute("aria-label", `${titleOf(favorite)} 的今日糖果计划`);
+    const heading = cardHeading(favorite); root.usage = makeUsage(); root.append(heading, schedule, metric, bars, root.usage, foot);
+    return { root, heading, ratio, summary, schedule, bars, date, stateLabel, slots: new Map() };
+  }
+  function updateCandyCard(card, favorite, plan, slots, current) {
+    const records = slots.map(slot => slot.run).filter(Boolean), match = records.filter(run => verdictOf(run) === "match").length, mismatch = records.filter(run => verdictOf(run) === "mismatch").length;
+    const working = records.find(run => run.status === "running") || records.find(active) || current;
+    const { root, ratio, summary, schedule, bars, date, stateLabel } = card;
+    const empty = !favorite.available ? "模型不可用" : !plan ? "等待测试" : plan.migrationReason ? "待设置" : !plan.enabled ? "已暂停" : !slots.length ? "今日休息" : "等待测试";
+    text(ratio, match + mismatch ? `${Math.round(match / (match + mismatch) * 100)}%` : working ? verdictLabel(working) : "—");
+    ratio.className = "candy-ratio" + (!match && !mismatch && working ? " candy-progress-label" : "");
+    text(summary, match + mismatch ? `${match} / ${match + mismatch} 答案匹配` : working ? "" : empty); schedule.update(plan, favorite); card.heading.update(favorite);
+    for (const [key, entry] of card.slots) if (!slots.some(slot => slot.key === key)) { entry.bar.remove(); card.slots.delete(key); }
+    for (const [index, slot] of slots.entries()) {
+      let entry = card.slots.get(slot.key);
+      if (!entry) {
+        const bar = button("", () => { if (entry.slot.run) return showRecord(entry.slot.run, bar); status(entry.slot.labelText, false, "note"); }, "candy-bar");
+        entry = { bar }; card.slots.set(slot.key, entry);
+        bar.addEventListener("keydown", event => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+          event.preventDefault(); const controls = [...bars.children], at = controls.indexOf(bar);
+          const next = event.key === "Home" ? 0 : event.key === "End" ? controls.length - 1 : Math.max(0, Math.min(controls.length - 1, at + (event.key === "ArrowRight" ? 1 : -1)));
+          controls[next]?.focus();
+        });
+      }
+      entry.slot = slot; const { bar } = entry;
+      bar.dataset.verdict = slot.verdict; bar.title = slot.labelText; bar.setAttribute("aria-label", slot.labelText);
+      if (bars.children[index] !== bar) bars.insertBefore(bar, bars.children[index] || null);
+    }
+    const latest = working || records.at(-1);
+    text(date, plan?.today ? `${plan.today.date.slice(5)} · ${slots.length} 次` : ""); stateLabel.className = working ? "running-label" : "";
+    text(stateLabel, working ? match + mismatch ? verdictLabel(working) : "" : plan && !plan.enabled ? "已暂停" : records.length ? `已结束 ${records.filter(run => !active(run)).length} / ${slots.length}` : "");
+    root.latestRunId = latest?.id; renderUsage(root.usage, latest); root.dataset.available = String(favorite.available);
+  }
+  function progress(id) {
+    if (!isVisible()) return;
+    const run = runs.get(id); if (!run) return;
+    for (const { root } of candyCards.values()) if (root.latestRunId === id) renderUsage(root.usage, run);
+    if (recordUsage?.id === id) {
+      renderUsage(recordUsage.strip, run);
+      recordUsage.live?.(run);
+      if (!active(run)) recordUsage.refresh?.();
+    }
+  }
+  function render() {
+    if (!isVisible()) return;
+    text($("favorite-count"), String(state.favorites.length));
+    const providerControl = $("favorite-provider"), provider = providerControl.value;
+    const providers = new Map(state.favorites.map(f => [f.provider, f.providerName || f.provider]));
+    const providerSignature = JSON.stringify([...providers]);
+    if (providerControl.dataset.options !== providerSignature) {
+      providerControl.replaceChildren(); const all = node("option", "", "全部供应商"); all.value = ""; providerControl.append(all);
+      for (const [id, name] of providers) { const option = node("option", "", name); option.value = id; providerControl.append(option); }
+      providerControl.value = providers.has(provider) ? provider : ""; providerControl.dataset.options = providerSignature;
+    }
+    const favorites = filtered(), isCandy = kind === "candy", pages = Math.max(1, Math.ceil(favorites.length / 24)); page = Math.min(page, pages - 1);
+    const visible = favorites.slice(page * 24, (page + 1) * 24), indexed = new Map(), working = new Map();
+    for (const run of runs.values()) if (run.kind === kind && run.favoriteId) {
+      if (active(run)) { const prior = working.get(run.favoriteId); if (!prior || prior.status !== "running" && run.status === "running" || prior.status === run.status && run.createdAt > prior.createdAt) working.set(run.favoriteId, run); }
+      for (const ref of run.plans || []) if (ref.triggerKey) indexed.set(ref.triggerKey, run);
+    }
+    for (const key of Object.keys(labels)) $("favorite-" + key).setAttribute("aria-pressed", String(key === kind));
+    $("favorite-candy-grid").hidden = !isCandy; $("favorite-results").hidden = isCandy; $("favorite-empty").hidden = favorites.length > 0;
+    if (isCandy) {
+      mount([]); for (const row of animationRows.values()) row.root.remove(); animationRows.clear();
+      const container = $("favorite-candy-grid");
+      for (const [id, cached] of candyCards) if (!visible.some(f => f.id === id)) { cached.root.remove(); candyCards.delete(id); }
+      for (const [index, favorite] of visible.entries()) {
+        const plan = planOf(favorite), slots = recordsFor(favorite, plan, indexed), current = working.get(favorite.id);
+        let cached = candyCards.get(favorite.id);
+        if (!cached) { cached = candyCard(favorite); candyCards.set(favorite.id, cached); }
+        updateCandyCard(cached, favorite, plan, slots, current);
+        if (cached.root.latestRunId) renderUsage(cached.root.usage, runs.get(cached.root.latestRunId));
+        if (container.children[index] !== cached.root) container.insertBefore(cached.root, container.children[index] || null);
+      }
+    } else {
+      for (const { root } of candyCards.values()) root.remove(); candyCards.clear();
+      const container = $("favorite-results"), ids = [], targets = new Map();
+      for (const [id, row] of animationRows) if (!visible.some(f => f.id === id)) { row.root.remove(); animationRows.delete(id); }
+      for (const [index, favorite] of visible.entries()) {
+        const plan = planOf(favorite), slots = recordsFor(favorite, plan, indexed);
+        const signature = JSON.stringify([favorite.modelId, favorite.modelName, favorite.providerName, plan?.id, plan?.revision, plan?.today?.date, slots.map(s => s.key)]);
+        let row = animationRows.get(favorite.id);
+        if (!row || row.signature !== signature) {
+          row?.root.remove(); const root = node("section", "animation-row"), heading = node("div", "animation-model"), lane = node("div", "animation-lane");
+          const schedule = planControls(favorite, plan); heading.append(cardHeading(favorite), schedule); lane.setAttribute("tabindex", "0"); lane.setAttribute("role", "region"); lane.setAttribute("aria-label", `${titleOf(favorite)} 的动画时间长廊`);
+          root.append(heading, lane); row = { root, lane, schedule, signature, slots: new Map() }; animationRows.set(favorite.id, row);
+          for (const slot of slots) { const cell = node("div", "animation-slot"), time = node("div", "animation-time", slot.label), body = node("div", "animation-slot-body"); cell.append(time, body); lane.append(cell); row.slots.set(slot.key, { body, placeholder: null }); }
+          if (!slots.length) lane.append(node("p", "help animation-no-plan", !plan ? "暂无计划" : plan.migrationReason || "今日没有测试时刻"));
+        }
+        row.schedule.update(plan);
+        for (const slot of slots) {
+          const target = row.slots.get(slot.key);
+          if (slot.run) { target.placeholder?.remove(); target.placeholder = null; ids.push(slot.run.id); targets.set(slot.run.id, target.body); }
+          else {
+            if (!target.placeholder) { target.placeholder = node("div", "animation-placeholder"); target.body.append(target.placeholder); }
+            text(target.placeholder, phaseLabel[slot.state] || "待运行"); target.placeholder.title = slot.labelText; target.placeholder.dataset.state = slot.state;
+          }
+        }
+        if (container.children[index] !== row.root) container.insertBefore(row.root, container.children[index] || null);
+      }
+      mount(ids, targets);
+    }
+    if (recordUsage) progress(recordUsage.id);
+    text($("favorite-page-info"), favorites.length ? `${favorites.length} 个模型 · ${page + 1} / ${pages}` : "");
+    $("favorite-prev").disabled = page === 0; $("favorite-next").disabled = page >= pages - 1;
+  }
+
+  async function showRecord(run, origin) {
+    const content = openDrawer("糖果结果", origin), version = drawerVersion;
+    content.append(node("p", "help", "正在读取…"));
+    try {
+      const detail = await api(`api/runs/${run.id}`); if (version !== drawerVersion) return;
+      content.replaceChildren(); const headline = node("div", "record-headline");
+      const verdict = node("span"), answer = node("strong"); headline.append(answer, verdict); content.append(headline);
+      const provider = run.provider || (typeof run.model === "string" ? run.model.split("/")[0] : "未知供应商"), name = modelLabel({ id: run.model, name: run.modelName, provider, providerName: run.providerName }, false);
+      content.append(node("h3", "detail-name", name), node("p", "help", run.providerName || provider), node("p", "help", `${when(run.createdAt)} · ${run.effort || "默认档位"} · ${tokenLabel(run.maxTokens)}`));
+      const usage = makeUsage(), current = runs.get(run.id); recordUsage = { id: run.id, strip: usage, label: verdict };
+      content.append(usage);
+      const output = node("pre", "source-view record-source"); output.setAttribute("tabindex", "0"); content.append(output);
+      const failure = node("p", "form-error"); content.append(failure); let copyFallback = null;
+      const copy = action("复制回答", async copyVersion => {
+        try { await navigator.clipboard.writeText(detail.content || ""); if (copyVersion === drawerVersion) text(copy, "已复制"); }
+        catch {
+          if (copyVersion !== drawerVersion) return;
+          if (!copyFallback) { copyFallback = field("请手动复制", "textarea", ""); copyFallback.control.readOnly = true; content.append(copyFallback.row); }
+          copyFallback.control.value = detail.content || ""; copyFallback.control.focus(); copyFallback.control.select();
+        }
+      }); copy.refreshDisabled = () => { copy.disabled = !detail.content || pendingActions.has(copy); }; content.append(copy);
+      const info = node("details", "editor-details"); info.append(node("summary", "", "题面与运行参数"));
+      const metadata = node("p", "help"), reasoning = node("pre", "source-view"); reasoning.setAttribute("tabindex", "0");
+      info.append(node("pre", "candy-prompt", detail.prompt || ""), metadata, reasoning);
+      content.append(info);
+      const cancel = active(detail) ? action("取消本次", async cancelVersion => { updateRun(await post(`api/runs/${run.id}/cancel`, {})); if (cancelVersion === drawerVersion) closeDrawer(); render(); }, "danger") : null;
+      if (cancel) content.append(cancel);
+      const record = recordUsage; record.finished = !active(detail);
+      const paint = () => {
+        headline.dataset.verdict = verdictOf(detail); text(answer, detail.candy?.answer ?? "—"); text(verdict, verdictLabel(detail));
+        text(output, detail.content || (active(detail) ? "等待回答…" : "暂无回答")); text(failure, detail.error || ""); failure.hidden = !detail.error;
+        text(reasoning, detail.reasoning || ""); reasoning.hidden = !detail.reasoning;
+        text(metadata, `题目 ${detail.candy?.version || "—"} · 用量 ${detail.tokens?.total ?? detail.usage?.total_tokens ?? "未知"} Token\n${detail.promptHash || ""}`);
+        copy.refreshDisabled(); if (cancel) cancel.hidden = !active(detail);
+        const latest = runs.get(run.id); renderUsage(usage, (latest?.usageRevision || 0) > (detail.usageRevision || 0) ? latest : detail);
+      };
+      record.live = value => {
+        text(verdict, verdictLabel(value));
+        for (const key of ["content", "reasoning"]) if (typeof value[key] === "string" && value[key].length >= (detail[key]?.length || 0)) detail[key] = value[key];
+        text(output, detail.content || (active(value) ? "等待回答…" : "正在读取结果…")); text(reasoning, detail.reasoning || ""); reasoning.hidden = !detail.reasoning; copy.refreshDisabled();
+      };
+      record.refresh = async () => {
+        if (record.finished || record.loading) return; record.loading = true;
+        try {
+          const updated = await api(`api/runs/${run.id}`); if (version !== drawerVersion || recordUsage !== record) return;
+          Object.assign(detail, updated); record.finished = !active(updated);
+          paint();
+        } catch (error) { if (version === drawerVersion) status(error.message, true); }
+        finally { record.loading = false; }
+      };
+      paint(); if (current) { record.live(current); renderUsage(usage, (current.usageRevision || 0) > (detail.usageRevision || 0) ? current : detail); }
+      if (current && !active(current) && active(detail)) record.refresh();
+    } catch (error) { if (version === drawerVersion) { content.replaceChildren(action("重试读取", () => showRecord(run, origin))); status(error.message, true); } }
+  }
+
+  function addEditor() {
+    const content = openDrawer("添加自动测试模型", $("favorite-add")), picked = new Set();
+    const providers = [...new Map([...models.values()].map(m => [m.provider, m.providerName || m.provider]))];
+    const provider = selectField("供应商", [["", "全部供应商"], ...providers], ""), search = field("模型", "search", ""); search.control.placeholder = "搜索模型";
+    const list = node("div", "editor-model-list"); let shown = 60;
+    const save = action("添加模型", async version => {
+      const ids = [...picked];
+      try { for (const modelId of ids) { await post("api/favorites/save", { modelId }); picked.delete(modelId); } }
+      finally { await refresh(); if (version === drawerVersion) renderList(); }
+      if (version === drawerVersion && !picked.size) closeDrawer(); render();
+    }, "primary"); save.disabled = true;
+    save.refreshDisabled = () => { save.disabled = !picked.size || pendingActions.has(save); text(save, `添加模型${picked.size ? ` · ${picked.size}` : ""}`); };
+    function renderList() {
+      list.replaceChildren(); const needle = search.control.value.toLowerCase().trim();
+      const matches = [...models.values()].filter(m => (!provider.control.value || m.provider === provider.control.value) && `${m.id} ${m.name}`.toLowerCase().includes(needle));
+      for (const model of matches.slice(0, shown)) {
+        const exists = state.favorites.some(f => f.modelId === model.id), item = check(`${modelLabel(model, false)}${provider.control.value ? "" : ` · ${model.providerName || model.provider}`}`, exists || picked.has(model.id), value => {
+          if (value) picked.add(model.id); else picked.delete(model.id); save.refreshDisabled();
+        }); item.control.disabled = exists; item.row.title = model.id; list.append(item.row);
+      }
+      if (matches.length > shown) list.append(button("显示更多", () => { shown += 60; renderList(); }, "quiet"));
+      if (!matches.length) list.append(node("p", "help", "没有匹配模型"));
+    }
+    provider.control.addEventListener("change", () => { shown = 60; renderList(); }); search.control.addEventListener("input", () => { shown = 60; renderList(); });
+    content.append(provider.row, search.row, list, save); renderList();
+  }
+
+  function manageEditor() {
+    const content = openDrawer("管理自动测试模型", $("favorite-manage")); let shown = 30;
+    function list() {
+      content.replaceChildren();
+      for (const favorite of state.favorites.slice(0, shown)) {
+        const row = node("div", "editor-list-row"), names = node("div", "card-model"); names.append(node("h3", "", titleOf(favorite)), node("p", "card-provider", favorite.providerName || favorite.provider));
+        row.append(names, action("编辑", () => editFavorite(favorite)), action("移除", async version => { await post("api/favorites/remove", { id: favorite.id }); await refresh(); if (version === drawerVersion) list(); }, "history-delete")); content.append(row);
+      }
+      if (state.favorites.length > shown) content.append(button("显示更多", () => { shown += 30; list(); }));
+      if (!state.favorites.length) content.append(node("p", "help", "暂无模型"));
+      const details = node("details", "editor-details"), limit = field("自动请求并行数", "number", state.concurrency);
+      details.append(node("summary", "", "并行设置"), limit.row, action("保存并行数", async version => {
+        const count = Number(limit.control.value); if (!limit.control.value.trim() || !Number.isSafeInteger(count) || count < 1) throw new Error("并行数需为正整数");
+        await post("api/schedules/settings", { concurrency: count }); await refresh(); if (version === drawerVersion) status("已保存", true, "success");
+      })); content.append(details);
+    }
+    list();
+  }
+
+  function editFavorite(favorite) {
+    const content = openDrawer("模型参数"), model = models.get(favorite.modelId);
+    content.append(node("h3", "detail-name", titleOf(favorite)), node("p", "help", favorite.providerName || favorite.provider));
+    const effort = selectField("思考档位", [["", "默认"], ...new Set([...(model?.efforts || []), ...(favorite.effort ? [favorite.effort] : [])])].map(value => Array.isArray(value) ? value : [value, value]), favorite.effort || "");
+    const tokens = field("输出上限 · Token", "number", favorite.maxTokens ?? 64000); tokens.control.min = "0";
+    const fields = node("div", "editor-columns"); fields.append(effort.row, tokens.row); content.append(fields);
+    const hint = node("p", "help", "0 = 不设输出上限"); hint.title = "插件不发送输出上限，实际仍受模型、供应商和网关限制"; content.append(hint);
+    const advanced = node("details", "editor-details"); advanced.append(node("summary", "", "动画提示词"));
+    const prompt = field("提示词", "textarea", favorite.prompt); prompt.control.rows = 5; prompt.control.maxLength = 12000; advanced.append(prompt.row); content.append(advanced);
+    content.append(action("保存参数", async version => {
+      const cap = Number(tokens.control.value);
+      if (!tokens.control.value.trim() || !Number.isSafeInteger(cap) || cap < 0) throw new Error("输出上限需为非负整数，0 表示不设上限");
+      await post("api/favorites/save", { id: favorite.id, modelId: favorite.modelId, effort: effort.control.value, maxTokens: cap, prompt: prompt.control.value });
+      await refresh(); if (version === drawerVersion) closeDrawer();
+    }, "primary"));
+  }
+
+  function planEditor(favorite, origin) {
+    const targetKind = kind, plan = planOf(favorite), content = openDrawer(`${labels[targetKind]}计划`, origin);
+    content.append(node("h3", "detail-name", titleOf(favorite)), node("p", "help", favorite.providerName || favorite.provider));
+    if (plan?.migrationReason) content.append(node("p", "form-error", plan.migrationReason));
+    const mode = selectField("执行方式", [["times", "指定时刻"], ["interval", "固定间隔"]], plan?.mode || "times");
+    const times = field("每天这些时刻 · 逗号分隔", "text", (plan?.times || ["09:00", "12:30", "18:00"]).join(", "));
+    times.control.placeholder = "09:00, 12:30, 18:00";
+    const interval = field("间隔 · 分钟", "number", plan?.intervalMinutes || 60), start = field("开始时间", "time", plan?.start || "09:00"), end = field("结束时间", "time", plan?.end || "18:00");
+    const intervalBox = node("div", "editor-section"), window = node("div", "editor-columns"); window.append(start.row, end.row);
+    const allDay = check("全天", plan?.allDay), counter = node("p", "schedule-capacity"); counter.setAttribute("role", "status");
+    intervalBox.append(interval.row, allDay.row, window); content.append(mode.row, times.row, intervalBox, counter);
+    const weekdays = new Set(plan?.days || [1, 2, 3, 4, 5]), days = node("div", "weekday-picker"), dayChecks = new Map(), shortcuts = node("div", "editor-shortcuts");
+    for (const [label, values] of [["每天", [0, 1, 2, 3, 4, 5, 6]], ["工作日", [1, 2, 3, 4, 5]], ["周末", [0, 6]]]) shortcuts.append(button(label, () => {
+      weekdays.clear(); for (const day of values) weekdays.add(day); for (const [day, control] of dayChecks) control.checked = weekdays.has(day); validate();
+    }, "quiet"));
+    for (const day of [1, 2, 3, 4, 5, 6, 0]) { const pick = check("日一二三四五六"[day], weekdays.has(day), value => { if (value) weekdays.add(day); else weekdays.delete(day); validate(); }); dayChecks.set(day, pick.control); days.append(pick.row); }
+    content.append(node("p", "help", "重复日期"), shortcuts, days);
+    const zone = field("时区", "text", plan?.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone);
+    const extra = node("details", "editor-details"); extra.append(node("summary", "", "时区与运行说明"), zone.row,
+      node("p", "help", "到点测试，满额排队。需保持插件运行，错过不补跑。"), node("p", "help", "跨午夜按开始日计算；结束后不再启动排队任务。")); content.append(extra);
+    const enable = check("启用此模型的计划", plan?.enabled || false); content.append(enable.row);
+    const save = action("保存计划", async version => {
+      if (!validate()) return;
+      await post("api/schedules/save", { ...(plan ? { id: plan.id } : {}), name: `${titleOf(favorite)} · ${labels[targetKind]}`.slice(0, 80), favoriteIds: [favorite.id], kinds: [targetKind],
+        mode: mode.control.value, times: mode.control.value === "times" ? readTimes() : plan?.times || ["09:00"],
+        ...(mode.control.value === "interval" ? { intervalMinutes: Number(interval.control.value), allDay: allDay.control.checked,
+          ...(allDay.control.checked ? {} : { start: start.control.value, end: end.control.value }) } : {}),
+        days: [...weekdays], timeZone: zone.control.value.trim(), enabled: enable.control.checked });
+      await refresh(); if (version === drawerVersion) closeDrawer();
+    }, "primary");
+    const actions = node("div", "editor-shortcuts"); actions.append(save, button("模型参数", () => editFavorite(favorite), "quiet"));
+    if (plan) actions.append(action("删除计划", async version => { await post("api/schedules/remove", { id: plan.id }); await refresh(); if (version === drawerVersion) closeDrawer(); }, "history-delete"));
+    content.append(actions);
+    const readTimes = () => [...new Set(times.control.value.split(/[,，;；\s]+/).filter(Boolean))].sort();
+    function validate() {
+      const byTimes = mode.control.value === "times", cap = state.maxDailySlots || 24;
+      times.row.hidden = !byTimes; intervalBox.hidden = byTimes; window.hidden = allDay.control.checked;
+      let count = 0, message = "", duration = 0;
+      const validClock = value => /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value), minute = value => Number(value.slice(0, 2)) * 60 + Number(value.slice(3));
+      if (byTimes) { const values = readTimes(); count = values.length; if (!count || values.some(value => !validClock(value))) message = "请输入 HH:mm 格式的时刻"; }
+      else {
+        const step = Number(interval.control.value), begin = minute(start.control.value), finish = minute(end.control.value);
+        duration = allDay.control.checked ? 1440 : finish > begin ? finish - begin : 1440 - begin + finish;
+        if (!Number.isSafeInteger(step) || step < 1) message = "间隔需为正整数";
+        else if (!allDay.control.checked && (!validClock(start.control.value) || !validClock(end.control.value) || begin === finish)) message = "请设置不同的开始和结束时间";
+        else count = Math.ceil(duration / step);
+      }
+      if (!message && count > cap) message = `每天 ${count} 次，最多 ${cap} 次${duration ? `；间隔至少 ${Math.ceil(duration / cap)} 分钟` : ""}`;
+      if (!message && !weekdays.size) message = "请选择重复日期";
+      try { if (!zone.control.value.trim()) throw new Error(); new Intl.DateTimeFormat("en", { timeZone: zone.control.value.trim() }); } catch { message ||= "请输入有效时区，如 Asia/Shanghai"; }
+      save.disabled = Boolean(message) || pendingActions.has(save); counter.dataset.invalid = String(Boolean(message)); text(counter, message || `每天 ${count} 次 / 最多 ${cap} 次`); return !message;
+    }
+    save.refreshDisabled = validate;
+    for (const item of [mode, times, interval, start, end, zone]) { item.control.addEventListener("input", validate); item.control.addEventListener("change", validate); }
+    allDay.control.addEventListener("change", validate); validate();
+  }
+
+  for (const id of ["favorite-add", "favorite-empty-add"]) $(id).addEventListener("click", addEditor);
+  $("favorite-manage").addEventListener("click", manageEditor);
+  for (const key of Object.keys(labels)) $("favorite-" + key).addEventListener("click", () => { if (kind === key) return; kind = key; page = 0; $("favorite-scroll").scrollTop = 0; status(""); render(); });
+  $("favorite-provider").addEventListener("change", () => { page = 0; $("favorite-scroll").scrollTop = 0; render(); });
+  for (const [id, direction] of [["favorite-prev", -1], ["favorite-next", 1]]) $(id).addEventListener("click", () => { page = Math.max(0, page + direction); $("favorite-scroll").scrollTop = 0; render(); });
+  setInterval(() => { if (isVisible()) refresh(); }, 60000);
+  return {
+    init(boot) {
+      supported = boot.favoritesAvailable === true; if (boot.favorites) state = boot.favorites;
+      for (const id of ["favorite-add", "favorite-empty-add", "favorite-manage"]) $(id).disabled = !supported;
+      if (!supported) status("重新开启插件以加载自动测试功能", false, "note"); render();
+    },
+    render, refresh, closeDrawer, progress,
+    async addSelected(picks, settings) {
+      if (!supported) throw new Error("重新开启插件以加载自动测试功能");
+      for (const [modelId, effort] of picks) await post("api/favorites/save", { modelId, effort, ...settings });
+      await refresh();
+    },
+  };
+};
