@@ -3,8 +3,9 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>模型实验室</title>
   <style>
-    :root { color-scheme: light; --bg: #f5f6fa; --card: #ffffff; --fg: #202636; --muted: #626d80; --line: #e0e5ef; --control-line: #7d899d; --accent: #435bc4; --soft: #edf1ff; scrollbar-gutter: stable; overflow-y: auto; }
-    @media (prefers-color-scheme: dark) { :root { color-scheme: dark; --bg: #141720; --card: #1d222e; --fg: #ecf0fa; --muted: #aab5ca; --line: #374154; --control-line: #74819a; --accent: #b5c4ff; --soft: #2b385b; } }
+    :root { color-scheme: light; --bg: #f5f6f8; --card: #ffffff; --fg: #263141; --muted: #606c7e; --line: #dce1e9; --control-line: #7a8596; --accent: #5362bf; --soft: #edf0fb; scrollbar-gutter: stable; overflow-y: auto; }
+    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { color-scheme: dark; --bg: #1b1e24; --card: #242830; --fg: #e0e4eb; --muted: #aab3c2; --line: #3a414c; --control-line: #778397; --accent: #a9b8f2; --soft: #30394f; } }
+    :root[data-theme="dark"] { color-scheme: dark; --bg: #1b1e24; --card: #242830; --fg: #e0e4eb; --muted: #aab3c2; --line: #3a414c; --control-line: #778397; --accent: #a9b8f2; --soft: #30394f; }
     * { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--control-line) transparent; }
     @supports selector(::-webkit-scrollbar) {
       * { scrollbar-width: auto; scrollbar-color: auto; }

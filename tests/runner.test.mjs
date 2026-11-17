@@ -122,7 +122,7 @@ test("batch rejects duplicates, unknown models and invalid concurrency before ge
   await assert.rejects(() => runner.submit(request(["one", "one"])), /重复/);
   await assert.rejects(() => runner.submit(request(["missing"])), /模型/);
   await assert.rejects(() => runner.submit(request(["one", "two", "three", "four", "missing"])), /模型/);
-  for (const concurrency of [0, -1, 1.5, "three", Infinity]) await assert.rejects(() => runner.submit({ ...request(), concurrency }), /并行/);
+  for (const concurrency of [-1, 1.5, "three", Infinity]) await assert.rejects(() => runner.submit({ ...request(), concurrency }), /并行/);
   assert.equal(upstream.seen.requests.length, 0);
 });
 
@@ -157,6 +157,17 @@ test("concurrency is enforced per batch without changing another batch's setting
   for (const id of ["two", "four", "five", "six"]) releases.get("fixture/" + id)();
   await waitFor(() => [...first, ...second].every(run => runner.get(run.id).status === "completed"));
   assert.ok(upstream.seen.peak <= 4);
+});
+
+for (const kind of ["pelican", "candy"]) test(`${kind} zero concurrency starts every request without waiting for completion`, async t => {
+  const { runner, upstream } = await setup(t, ({ res }) => { res.writeHead(200, { "content-type": "text/event-stream" }); res.flushHeaders(); });
+  const created = await runner.submit({ ...request(["one", "two", "three", "four"]), kind, concurrency: 0, maxTokens: 0 });
+  await waitFor(() => upstream.seen.requests.length === 4);
+  assert.equal(upstream.seen.peak, 4);
+  assert.ok(created.every(run => run.concurrency === 0 && runner.get(run.id).status === "running"));
+  assert.ok(upstream.seen.requests.every(payload => !Object.hasOwn(payload, "max_tokens")));
+  await runner.cancelBatch(created[0].batchId);
+  assert.ok(created.every(run => runner.get(run.id).status === "cancelled"));
 });
 
 test("history summaries retain every member of a batch larger than one hundred models", () => {

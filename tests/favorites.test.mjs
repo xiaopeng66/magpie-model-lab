@@ -68,6 +68,29 @@ test("removing a favorite unlinks plans without removing completed history", asy
   assert.equal(favorites.snapshot().plans.length, 0);
 });
 
+test("zero automatic concurrency releases queued work and persists through restart", async t => {
+  const { dir, favorites, runner, upstream } = await setup(t, ({ res }) => { res.writeHead(200, { "content-type": "text/event-stream" }); res.flushHeaders(); });
+  const members = [], plans = [];
+  for (const modelId of ["fixture/one", "fixture/two", "fixture/three", "fixture/four"]) {
+    const favorite = await favorites.save({ modelId, maxTokens: 0, concurrency: { candy: 0, pelican: 0, fingerprint: 0 } });
+    members.push(favorite.id);
+    plans.push(await favorites.savePlan({ favoriteIds: [favorite.id], kinds: ["candy"], enabled: true }));
+  }
+  await favorites.settings({ concurrency: 1 });
+  const result = await favorites.run({ ids: members, kinds: ["candy"] }, { source: "automatic", plans: plans.map(plan => ({ id: plan.id, revision: plan.revision })), expiresAt: new Date(Date.now() + 60000).toISOString() });
+  assert.equal(result.errors.length, 0); assert.equal(result.runs.length, 4);
+  await waitFor(() => upstream.seen.requests.length === 1);
+  assert.equal(runner.queue.length, 3);
+  await favorites.settings({ concurrency: 0 });
+  await waitFor(() => upstream.seen.requests.length === 4);
+  assert.equal(upstream.seen.peak, 4);
+  assert.ok(upstream.seen.requests.every(payload => !Object.hasOwn(payload, "max_tokens")));
+  const restored = new favoritesModule.Favorites({ dir, runner }); await restored.init();
+  assert.equal(restored.state.concurrency, 0);
+  assert.ok(restored.state.favorites.every(favorite => favorite.maxTokens === 0 && Object.values(favorite.concurrency).every(value => value === 0)));
+  for (const concurrency of [-1, 1.5, "0", Infinity]) await assert.rejects(() => restored.settings({ concurrency }), /并行/);
+});
+
 test("schedule occurrences honor local weekdays, interval boundaries and overnight start days", () => {
   assert.equal(typeof scheduling.occurrence, "function", "Missing schedule calculation");
   const base = { id: "p", revision: 1, enabled: true, mode: "times", times: ["09:00", "18:00"], days: [1], timeZone: "Asia/Shanghai" };
@@ -104,14 +127,17 @@ test("scheduler claims before dispatch, skips missed minutes and restart duplica
   const one = await favorites.save({ modelId: "fixture/one" });
   await favorites.savePlan({ name: "上午", favoriteIds: [one.id], kinds: ["candy"], times: ["09:00", "09:10"], days: [1], timeZone: "Asia/Shanghai", enabled: true });
   await favorites.settings({ enabled: true });
-  let now = new Date("2026-11-16T00:59:00Z");
+  const upcomingMonday = new Date(); upcomingMonday.setUTCHours(0, 0, 0, 0); upcomingMonday.setUTCDate(upcomingMonday.getUTCDate() + ((8 - upcomingMonday.getUTCDay()) % 7 || 7));
+  const dueAt = new Date(upcomingMonday); dueAt.setUTCHours(1);
+  const beforeDue = new Date(dueAt.getTime() - 60000), afterMissed = new Date(dueAt.getTime() + 11 * 60000);
+  let now = beforeDue;
   const scheduler = new scheduling.Scheduler(favorites, () => now); t.after(() => scheduler.close());
-  now = new Date("2026-11-16T01:00:00Z"); await scheduler.tick(); await scheduler.tick();
+  now = dueAt; await scheduler.tick(); await scheduler.tick();
   await waitFor(() => runner.list().length === 1 && runner.list()[0].status === "completed");
   assert.equal(runner.list()[0].plans.length, 1);
-  const restarted = new scheduling.Scheduler(favorites, () => new Date("2026-11-16T00:59:00Z"));
-  await restarted.tick(new Date("2026-11-16T01:00:00Z")); assert.equal(runner.list().length, 1);
-  now = new Date("2026-11-16T01:11:00Z"); await scheduler.tick(); assert.equal(runner.list().length, 1);
+  const restarted = new scheduling.Scheduler(favorites, () => beforeDue);
+  await restarted.tick(dueAt); assert.equal(runner.list().length, 1);
+  now = afterMissed; await scheduler.tick(); assert.equal(runner.list().length, 1);
   assert.ok(JSON.parse(await readFile(join(dir, ".favorites", "state.json"), "utf8")).claims.length);
   await restarted.close();
 });

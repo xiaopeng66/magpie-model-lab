@@ -22,6 +22,18 @@ async function chooseProvider(ui, id = "fixture") {
   control.value = id; await control.fire("change");
 }
 
+test("a manually selected theme survives refresh without dropping the current view", async () => {
+  const ui = await uiHarness({ bootstrap: boot([]), search: "?theme=dark&view=history&provider=fixture" });
+  await chooseProvider(ui);
+  await ui.elements.get("theme").fire("click");
+  assert.equal(ui.document.documentElement.dataset.theme, "light");
+  const reloaded = await uiHarness({ bootstrap: boot([]), search: ui.location.search });
+  await chooseProvider(reloaded);
+  assert.equal(reloaded.document.documentElement.dataset.theme, "light");
+  assert.equal(reloaded.elements.get("history-tab").getAttribute("aria-selected"), "true");
+  assert.equal(new URLSearchParams(reloaded.location.search).get("provider"), "fixture");
+});
+
 test("history detail still mounts preview when the SSE ready snapshot arrives during loading", async () => {
   let resolveDetail, requested = false;
   const ui = await uiHarness({ bootstrap: boot([run]), detail: () => { requested = true; return new Promise((resolve) => { resolveDetail = resolve; }); } });
@@ -138,22 +150,17 @@ test("restoring the default prompt clears its validation error and allows genera
   await ui.elements.get("generate").fire("click"); assert.equal(sent.prompt, "default animation");
 });
 
-test("host theme keeps surface and primary-button text paired with its supplied colors", async () => {
+test("host selects light or dark without mixing incomplete host colors into the local palette", async () => {
   const tokens = { bg: "#141720", card: "#1d222e", fg: "#ecf0fa", muted: "#aab5ca", line: "#374154", accent: "#b5c4ff", "accent-soft": "#2b385b", "accent-fg": "#1b294e", green: "#a0dcc2", red: "#ffb0be", amber: "#f3cb89", font: "ignored" };
   const search = `?theme=dark&tokens=${encodeURIComponent(JSON.stringify(tokens))}`;
   const ui = await uiHarness({ bootstrap: boot([]), detail: () => run, search });
   const style = ui.document.documentElement.style;
   assert.equal(ui.document.documentElement.dataset.theme, "dark");
-  assert.equal(style["--bg"], "#141720");
-  assert.equal(style["--surface"], "#1d222e", "Host card color must be used for surfaces");
-  assert.equal(style["--line"], "#374154");
-  assert.equal(style["--accent"], "#b5c4ff");
-  assert.equal(style["--accent-text"], "#1b294e", "A light dark-mode accent needs its supplied dark button text");
-  assert.equal(style["--accent-soft"], "#2b385b");
-  assert.equal(style["--success"], "#a0dcc2");
-  assert.equal(style["--error"], "#ffb0be");
-  assert.equal(style["--warning"], "#f3cb89");
-  assert.equal(style["--font"], undefined, "The theme's non-color fields are not CSS values to apply");
+  assert.ok(!Object.keys(style).some(key => key.startsWith("--")), "Keep paired surfaces, text and state colors in the tested local palette");
+  await ui.elements.get("theme").fire("click");
+  assert.equal(ui.document.documentElement.dataset.theme, "light");
+  await ui.elements.get("theme").fire("click");
+  assert.equal(ui.document.documentElement.dataset.theme, "dark");
 });
 
 test("cleanup removes displayed cards and history, and a deleted preview detail cannot reappear", async () => {

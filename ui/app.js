@@ -18,6 +18,7 @@
   const concurrencyDrafts = { current: "2", fingerprint: "3", candy: "3" }, exporting = new Set();
   const batchKey = run => run.roundId || run.batchId || run.id;
   const tokenLabel = value => value === 0 ? "不设输出上限" : `${value ?? 64000} Token`;
+  const concurrencyLabel = run => run.concurrency === 0 ? "不设并行上限" : `并行 ${run.concurrency ?? (run.kind === "fingerprint" || run.kind === "candy" ? 3 : 2)}`;
   const kindLabel = kind => ({ pelican: "动画", fingerprint: "指纹", candy: "糖果" })[kind || "pelican"];
   let favoritesAvailable = false, candyAvailable = false;
   let initialized = false, bootstrapping = false;
@@ -27,15 +28,12 @@
   let dark = query.get("theme") ? query.get("theme") === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
   const setTheme = () => { document.documentElement.dataset.theme = dark ? "dark" : "light"; };
   setTheme();
-  try {
-    const tokens = JSON.parse(query.get("tokens") || "{}");
-    const names = { bg: "--bg", card: "--surface", fg: "--fg", muted: "--muted", line: "--line", border: "--line", accent: "--accent", "accent-soft": "--accent-soft", "accent-fg": "--accent-text", green: "--success", red: "--error", amber: "--warning" };
-    for (const [key, value] of Object.entries(tokens)) {
-      if (Object.hasOwn(names, key) && typeof value === "string" && CSS.supports("color", value)) {
-        document.documentElement.style.setProperty(names[key], value);
-      }
-    }
-  } catch { /* an absent host theme uses local defaults */ }
+
+  function rememberView(values) {
+    const params = new URLSearchParams(location.search);
+    for (const [key, value] of Object.entries(values)) params.set(key, value);
+    try { history.replaceState(null, "", `?${params}`); } catch {}
+  }
 
   const node = (tag, className, text) => {
     const out = document.createElement(tag); if (className) out.className = className;
@@ -325,6 +323,8 @@
 
   function setView(name) {
     closeCalendar();
+    const returningToFavorites = name === "favorites" && activeView !== "favorites";
+    if (returningToFavorites) favoritesUI.resetAnimationPosition();
     activeView = name;
     for (const view of ["current", "fingerprint", "candy", "favorites", "history"]) {
       $(`${view}-panel`).hidden = view !== name;
@@ -340,6 +340,7 @@
     if (name !== "favorites") favoritesUI.closeDrawer(); else { favoritesUI.render(); favoritesUI.refresh(); }
     updateSettings();
     for (const card of [...cards.values()]) { renderCard(card.id, card.view); if (card.view === name) fitPreview(card); }
+    if (initialized && !bootstrapping) rememberView({ view: name, mode: executionView });
   }
 
   function updateSettings() {
@@ -568,7 +569,7 @@
     card.cancel.hidden = !active(run); card.cancel.disabled = card.cancelling;
     if (!card.detail.hidden) {
       text(card.fullName, `${run.modelName || run.model}\n${run.model}`);
-      text(card.parameters, `${run.effort || "默认档位"} · ${run.api || "自动接口"} · ${tokenLabel(run.maxTokens)} · 并行 ${run.concurrency || 2}`);
+      text(card.parameters, `${run.effort || "默认档位"} · ${run.api || "自动接口"} · ${tokenLabel(run.maxTokens)} · ${concurrencyLabel(run)}`);
       if (run.analysis !== card.renderedAnalysis) {
         card.renderedAnalysis = run.analysis; card.ranking.replaceChildren();
         for (const [index, item] of (run.analysis?.results || []).slice(0, 5).entries()) { const row = node("div", "ranking-row"); row.title = item.model;
@@ -665,7 +666,7 @@
     card.badge.title = states[run.status] || run.status;
     if (!card.detail.hidden) {
       text(card.fullName, run.modelName || run.model);
-      text(card.parameters, `${run.model} · ${run.effort || "默认档位"} · ${tokenLabel(run.maxTokens)} · 并行 ${run.concurrency || 2}`);
+      text(card.parameters, `${run.model} · ${run.effort || "默认档位"} · ${tokenLabel(run.maxTokens)} · ${concurrencyLabel(run)}`);
       renderStats(card, run);
       text(card.file, run.files?.html || run.files?.response || "正在准备保存位置");
       for (const [mode, tab] of Object.entries(card.tabs)) tab.setAttribute("aria-pressed", String(mode === card.mode));
@@ -771,7 +772,7 @@
     }
     return ids.map(id => cards.get(`favorites:${id}`)).filter(Boolean);
   }
-  const favoritesUI = createFavoritesUI({ $, node, text, button, iconButton, api, models, runs, modelLabel, when, active, makeUsage, renderUsage, mount: mountFavoriteRuns, updateRun, isVisible: () => activeView === "favorites" });
+  const favoritesUI = createFavoritesUI({ $, node, text, button, iconButton, api, models, runs, modelLabel, when, active, makeUsage, renderUsage, mount: mountFavoriteRuns, updateRun, isVisible: () => activeView === "favorites", initialKind: query.get("automatic"), rememberView });
   const tabViews = ["current", "fingerprint", "candy", "favorites", "history"];
   for (const [index, name] of tabViews.entries()) {
     const tab = $(`${name}-tab`);
@@ -837,7 +838,7 @@
   });
   $("provider").addEventListener("change", () => { $("model-search").value = ""; error(""); renderModels(); renderSelected(); });
   $("model-search").addEventListener("input", renderModels);
-  $("theme").addEventListener("click", () => { dark = !dark; document.documentElement.removeAttribute("style"); setTheme(); });
+  $("theme").addEventListener("click", () => { dark = !dark; setTheme(); rememberView({ theme: dark ? "dark" : "light" }); });
   const promptSummary = () => {
     $("prompt-summary").textContent = $("prompt").value === defaults ? "默认" : "已编辑";
     if ($("prompt").value.trim() && $("prompt").getAttribute("aria-invalid") === "true") { $("prompt").removeAttribute("aria-invalid"); error(""); }
@@ -981,8 +982,8 @@
   });
   function validateNumber(id, label) {
     const control = $(id), value = Number(control.value);
-    if (!control.value.trim() || !Number.isSafeInteger(value) || value < (id === "max-tokens" ? 0 : 1)) {
-      $("advanced-settings").open = true; control.setAttribute("aria-invalid", "true"); error(id === "max-tokens" ? "输出上限需为非负整数，0 表示不设上限" : `${label}需为正整数`); control.focus(); return false;
+    if (!control.value.trim() || !Number.isSafeInteger(value) || value < 0) {
+      $("advanced-settings").open = true; control.setAttribute("aria-invalid", "true"); error(`${label}需为非负整数，0 表示不设上限`); control.focus(); return false;
     }
     control.removeAttribute("aria-invalid"); return true;
   }

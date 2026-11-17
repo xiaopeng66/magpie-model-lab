@@ -5,7 +5,7 @@ class Element {
   constructor(tag = "div") {
     this.tagName = tag.toUpperCase(); this.children = []; this.handlers = {}; this.attributes = {}; this.dataset = {};
     this.hidden = false; this.value = ""; this.checked = false; this.disabled = false; this.className = ""; this._textContent = ""; this.textWrites = 0; this.replacements = 0;
-    this.clientWidth = 200; this.clientHeight = 120;
+    this.clientWidth = 200; this.clientHeight = 120; this.scrollLeft = 0;
     if (tag === "iframe") this.contentWindow = {};
     this.style = { setProperty: (name, value) => { this.style[name] = value; } };
     this.classList = { add: (name) => { this.className += " " + name; }, remove: (name) => { this.className = this.className.replace(name, ""); },
@@ -36,7 +36,7 @@ class Element {
   async fire(type, details = {}) { for (const listener of this.handlers[type] || []) await listener({ preventDefault() {}, target: this, ...details }); }
 }
 
-export async function uiHarness({ bootstrap, detail, create, cleanup, open, openStorage, bank, accounts, exportBatch, favorites, writeClipboard, request, intersection = false, navigate = () => {}, search = "", viewport = { width: 1024, height: 768 }, token = "test-only-token" }) {
+export async function uiHarness({ bootstrap, detail, create, cleanup, open, openStorage, bank, accounts, exportBatch, favorites, writeClipboard, request, intersection = false, navigate = () => {}, search = "", viewport = { width: 1024, height: 768 }, token = "test-only-token", now = Date.now }) {
   const source = await readFile(new URL("../ui/favorites.js", import.meta.url), "utf8") + "\n" + await readFile(new URL("../ui/app.js", import.meta.url), "utf8");
   const html = await readFile(new URL("../ui/index.html", import.meta.url), "utf8");
   const elements = new Map([...html.matchAll(/<([a-z][\w:-]*)\b[^>]*\bid="([^"]+)"[^>]*>/gi)].map(match => {
@@ -90,12 +90,17 @@ export async function uiHarness({ bootstrap, detail, create, cleanup, open, open
   const copied = [];
   const timers = new Map(); let nextTimer = 0;
   const parent = {};
-  runInNewContext(source, { document, fetch, parent, navigator: { clipboard: { writeText: writeClipboard || (async value => copied.push(value)) } }, location: { search, replace: navigate }, matchMedia: () => ({ matches: false }), CSS: { supports: () => true },
+  const location = { search, replace: navigate }, history = { replaceState(_state, _title, url) { location.search = new URL(url, "http://fixture.local/").search; } };
+  class TestDate extends Date {
+    constructor(...args) { super(...(args.length ? args : [now()])); }
+    static now() { return now(); }
+  }
+  runInNewContext(source, { Date: TestDate, document, fetch, parent, history, navigator: { clipboard: { writeText: writeClipboard || (async value => copied.push(value)) } }, location, matchMedia: () => ({ matches: false }), CSS: { supports: () => true },
     URLSearchParams, Response, TextDecoder, ResizeObserver, ...(intersection ? { IntersectionObserver } : {}), innerWidth: viewport.width, innerHeight: viewport.height, setInterval() {}, setTimeout(callback) { timers.set(++nextTimer, callback); return nextTimer; }, clearTimeout(id) { timers.delete(id); },
     requestAnimationFrame(listener) { frames.set(++nextFrame, listener); return nextFrame; }, cancelAnimationFrame(id) { frames.delete(id); },
     addEventListener(type, listener) { (listeners[type] ||= []).push(listener); }, console });
   const dispatch = (type, value) => { for (const listener of listeners[type] || []) listener(value); };
-  return { elements, document, event, observed, copied, parent, closeStream() { controller.close(); }, timers, runTimer(id) { const callback = timers.get(id); timers.delete(id); callback?.(); }, intersect(element, visible) { intersections.get(element)?.([{ target: element, isIntersecting: visible }]); }, pendingFrames: () => frames.size,
+  return { elements, document, event, observed, copied, parent, location, closeStream() { controller.close(); }, timers, runTimer(id) { const callback = timers.get(id); timers.delete(id); callback?.(); }, intersect(element, visible) { intersections.get(element)?.([{ target: element, isIntersecting: visible }]); }, pendingFrames: () => frames.size,
     flushFrames() { const pending = [...frames.values()]; frames.clear(); for (const listener of pending) listener(); },
     dispatch, message(value) { dispatch("message", value); }, descendants(element, tag) {
     const out = [];

@@ -7,11 +7,12 @@ const source = await readFile(new URL("../page/boot.js", import.meta.url), "utf8
 async function entry(magpie) {
   const added = [], timers = new Map(), status = { textContent: "", after(control) { added.push(control); } };
   let reloads = 0, navigation = "";
-  runInNewContext(source, { window: { magpie }, URL, document: { getElementById: () => status, createElement: () => ({}) },
+  const root = { dataset: {} };
+  runInNewContext(source, { window: { magpie }, URL, document: { documentElement: root, getElementById: () => status, createElement: () => ({}) },
     location: { href: "http://plugin.local/page/index.html", reload() { reloads++; }, replace(value) { navigation = value; } },
     setTimeout(callback) { timers.set(1, callback); return 1; }, clearTimeout(id) { timers.delete(id); } });
   await new Promise(resolve => setImmediate(resolve));
-  return { status, added, timers, reloads: () => reloads, navigation: () => navigation };
+  return { status, added, timers, root, reloads: () => reloads, navigation: () => navigation };
 }
 
 test("entry failure exposes one retry and stalled bridge initialization has a recovery button", async () => {
@@ -24,5 +25,6 @@ test("entry failure exposes one retry and stalled bridge initialization has a re
 test("entry navigation retains host theme and provider context", async () => {
   const page = await entry({ ready: Promise.resolve({ dark: true, tokens: { fg: "#ffffff" } }), options: { get: async () => ({ port: 3489 }) }, context: { provider: { id: "fixture" } } });
   const url = new URL(page.navigation());
+  assert.equal(page.root.dataset.theme, "dark", "The loading screen must use the same mode as the destination");
   assert.equal(url.hostname, "127.0.0.1"); assert.equal(url.searchParams.get("theme"), "dark"); assert.equal(url.searchParams.get("provider"), "fixture"); assert.equal(url.searchParams.get("view"), "fingerprint");
 });

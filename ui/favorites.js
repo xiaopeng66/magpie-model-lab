@@ -1,8 +1,8 @@
 /* Shared favorites use the same saved runs and preview components as the test pages. */
 "use strict";
-globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, api, models, runs, modelLabel, when, active, makeUsage, renderUsage, mount, updateRun, isVisible }) {
+globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, api, models, runs, modelLabel, when, active, makeUsage, renderUsage, mount, updateRun, isVisible, initialKind, rememberView }) {
   const labels = { candy: "糖果", pelican: "动画" }, candyCards = new Map(), animationRows = new Map(), pendingActions = new WeakSet(), pendingPlans = new Set();
-  let state = { favorites: [], plans: [], enabled: true, concurrency: 3 }, supported = false, kind = "candy", page = 0, opener = null, drawerVersion = 0, refreshTask = null, refreshAgain = false;
+  let state = { favorites: [], plans: [], enabled: true, concurrency: 3 }, supported = false, kind = initialKind === "pelican" ? "pelican" : "candy", page = 0, opener = null, drawerVersion = 0, refreshTask = null, refreshAgain = false;
   let fieldNumber = 0, recordUsage = null;
   const post = (path, body) => api(path, { method: "POST", body: JSON.stringify(body) });
   const status = (message, panel = false, tone = "error") => { const target = $(panel ? "drawer-status" : "favorite-status"); text(target, message); target.hidden = !message; target.dataset.tone = tone; };
@@ -13,6 +13,10 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
   const tokenLabel = value => value === 0 ? "不设输出上限" : `${value ?? 64000} Token`;
   const planOf = favorite => state.plans.find(plan => plan.favoriteIds[0] === favorite.id && plan.kinds[0] === kind);
   const phaseLabel = { waiting: "待运行", paused: "已暂停", missed: "已错过", skipped: "已跳过", started: "结果已清理", error: "请求失败" };
+  function animationTarget(slots, now = Date.now()) {
+    const scheduled = slots.filter(slot => Number.isFinite(Date.parse(slot.at)));
+    return scheduled.find(slot => Date.parse(slot.at) <= now) || scheduled.at(-1) || slots.find(slot => slot.run) || slots[0];
+  }
   function recordsFor(favorite, plan, indexed) {
     return (plan?.today?.slots || []).map(slot => {
       const candidate = (slot.runId ? runs.get(slot.runId) : null) || indexed.get(slot.key);
@@ -203,14 +207,15 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
       const container = $("favorite-results"), ids = [], targets = new Map();
       for (const [id, row] of animationRows) if (!visible.some(f => f.id === id)) { row.root.remove(); animationRows.delete(id); }
       for (const [index, favorite] of visible.entries()) {
-        const plan = planOf(favorite), slots = recordsFor(favorite, plan, indexed);
+        const plan = planOf(favorite), slots = recordsFor(favorite, plan, indexed).sort((first, second) =>
+          Date.parse(second.at) - Date.parse(first.at) || second.label.localeCompare(first.label));
         const signature = JSON.stringify([favorite.modelId, favorite.modelName, favorite.providerName, plan?.id, plan?.revision, plan?.today?.date, slots.map(s => s.key)]);
         let row = animationRows.get(favorite.id);
         if (!row || row.signature !== signature) {
           row?.root.remove(); const root = node("section", "animation-row"), heading = node("div", "animation-model"), lane = node("div", "animation-lane");
           const schedule = planControls(favorite, plan); heading.append(cardHeading(favorite), schedule); lane.setAttribute("tabindex", "0"); lane.setAttribute("role", "region"); lane.setAttribute("aria-label", `${titleOf(favorite)} 的动画时间长廊`);
           root.append(heading, lane); row = { root, lane, schedule, signature, slots: new Map() }; animationRows.set(favorite.id, row);
-          for (const slot of slots) { const cell = node("div", "animation-slot"), time = node("div", "animation-time", slot.label), body = node("div", "animation-slot-body"); cell.append(time, body); lane.append(cell); row.slots.set(slot.key, { body, placeholder: null }); }
+          for (const slot of slots) { const cell = node("div", "animation-slot"), time = node("div", "animation-time", slot.label), body = node("div", "animation-slot-body"); cell.append(time, body); lane.append(cell); row.slots.set(slot.key, { cell, body, placeholder: null }); }
           if (!slots.length) lane.append(node("p", "help animation-no-plan", !plan ? "暂无计划" : plan.migrationReason || "今日没有测试时刻"));
         }
         row.schedule.update(plan);
@@ -223,6 +228,17 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
           }
         }
         if (container.children[index] !== row.root) container.insertBefore(row.root, container.children[index] || null);
+        const latest = animationTarget(slots);
+        const latestKey = latest ? `${latest.key}:${latest.run?.id || ""}` : "";
+        row.latestKey = latestKey;
+        if (row.scrolledKey !== latestKey) {
+          requestAnimationFrame(() => {
+            if (!isVisible() || kind !== "pelican" || animationRows.get(favorite.id) !== row || row.latestKey !== latestKey || row.scrolledKey === latestKey) return;
+            const cell = row.slots.get(latest?.key)?.cell, first = row.lane.children[0];
+            row.lane.scrollLeft = cell && first ? cell.getBoundingClientRect().left - first.getBoundingClientRect().left : 0;
+            row.scrolledKey = latestKey;
+          });
+        }
       }
       mount(ids, targets);
     }
@@ -323,9 +339,10 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
       }
       if (state.favorites.length > shown) content.append(button("显示更多", () => { shown += 30; list(); }));
       if (!state.favorites.length) content.append(node("p", "help", "暂无模型"));
-      const details = node("details", "editor-details"), limit = field("自动请求并行数", "number", state.concurrency);
-      details.append(node("summary", "", "并行设置"), limit.row, action("保存并行数", async version => {
-        const count = Number(limit.control.value); if (!limit.control.value.trim() || !Number.isSafeInteger(count) || count < 1) throw new Error("并行数需为正整数");
+      const details = node("section", "editor-section editor-details"), limit = field("自动请求并行数", "number", state.concurrency); limit.control.min = "0";
+      const hint = node("p", "help", "0 = 不设并行上限"); hint.id = `${limit.control.id}-help`; limit.control.setAttribute("aria-describedby", hint.id);
+      details.append(node("h3", "", "并行设置"), limit.row, hint, action("保存并行数", async version => {
+        const count = Number(limit.control.value); if (!limit.control.value.trim() || !Number.isSafeInteger(count) || count < 0) throw new Error("并行数需为非负整数，0 表示不设上限");
         await post("api/schedules/settings", { concurrency: count }); await refresh(); if (version === drawerVersion) status("已保存", true, "success");
       })); content.append(details);
     }
@@ -408,7 +425,7 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
 
   for (const id of ["favorite-add", "favorite-empty-add"]) $(id).addEventListener("click", addEditor);
   $("favorite-manage").addEventListener("click", manageEditor);
-  for (const key of Object.keys(labels)) $("favorite-" + key).addEventListener("click", () => { if (kind === key) return; kind = key; page = 0; $("favorite-scroll").scrollTop = 0; status(""); render(); });
+  for (const key of Object.keys(labels)) $("favorite-" + key).addEventListener("click", () => { if (kind === key) return; kind = key; page = 0; $("favorite-scroll").scrollTop = 0; rememberView({ view: "favorites", automatic: kind }); status(""); render(); });
   $("favorite-provider").addEventListener("change", () => { page = 0; $("favorite-scroll").scrollTop = 0; render(); });
   for (const [id, direction] of [["favorite-prev", -1], ["favorite-next", 1]]) $(id).addEventListener("click", () => { page = Math.max(0, page + direction); $("favorite-scroll").scrollTop = 0; render(); });
   setInterval(() => { if (isVisible()) refresh(); }, 60000);
@@ -419,6 +436,9 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
       if (!supported) status("重新开启插件以加载自动测试功能", false, "note"); render();
     },
     render, refresh, closeDrawer, progress,
+    resetAnimationPosition() {
+      for (const row of animationRows.values()) row.scrolledKey = "";
+    },
     async addSelected(picks, settings) {
       if (!supported) throw new Error("重新开启插件以加载自动测试功能");
       for (const [modelId, effort] of picks) await post("api/favorites/save", { modelId, effort, ...settings });

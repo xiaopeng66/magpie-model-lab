@@ -14,7 +14,13 @@
 
 Magpie 的普通 npm 搜索当前主要筛选 OpenCode 供应商插件和 pi provider 包。仅增加 `magpie-plugin` **npm keyword** 不等于进入发现；GitHub **topic** 是另一个设置。本插件依赖 Magpie 页面与网关，保持真实分类，不添加无关的 OpenCode 登录插件标签。
 
-## 1.0.0 发布信息
+## 1.0.1 合并更新
+
+当前源码和正式安装包版本为 **1.0.1**，合并此前未公开发布的动画长廊、零并行上限、历史筛选、主题及检索描述修复。正式标签和 Release 为 `v1.0.1`，独立资产为 `magpie-pelican-bench-1.0.1.zip` 与校验文件。保留已发布的 `v1.0.0` 及其资产；既有本地试用包作为历史材料保留，正式包输出到独立的 `dist/release-1.0.1` 目录。后续发布递增版本，不覆盖旧标签或资产。
+
+清单的中英文简介及 keywords 包含 AI 模型评测、模型对比、推理能力、智商／智力趣味测试、鹈鹕动画、模型指纹和定时监控。`magpie.summary` 每种语言均须保持在宿主允许的 300 UTF-8 字节以内，否则该语言简介会被忽略。发布同步 GitHub 仓库简介为 `模型实验室 Model Lab for Magpie：AI 模型评测与对比、糖果推理和智商趣味测试、鹈鹕动画、模型指纹、定时自动测试。`，并增加 `model-evaluation`、`model-comparison`、`reasoning-benchmark`、`iq-style-test` 等主题。检索仍受 GitHub 索引和宿主缓存影响。
+
+## 1.0.0 首次发布信息
 
 - 展示名称：**模型实验室 · Model Lab**。
 - 版本：**1.0.0**。
@@ -48,16 +54,16 @@ node --test tests/*.test.mjs
 bun test ./tests
 bun tools/check-static.mjs
 npm pack --dry-run --json
-powershell -NoProfile -File tools/package.ps1
-powershell -NoProfile -File tools/check-package.ps1 -Archive dist/magpie-pelican-bench-1.0.0.zip
+powershell -NoProfile -File tools/package.ps1 -OutputDirectory dist/release-1.0.1
+powershell -NoProfile -File tools/check-package.ps1 -Archive dist/release-1.0.1/magpie-pelican-bench-1.0.1.zip
 npm pack --pack-destination dist --ignore-scripts
 ```
 
 打包脚本拒绝覆盖同名 ZIP；需要再次构建时通过 `-OutputDirectory` 指定新目录。核对 `.zip.sha256` 和 npm 包实际文件清单后再发布。
 
-## GitHub 发布步骤
+## GitHub 首次发布步骤（1.0.0 历史记录）
 
-以下命令会实际公开源码、设置 topic 和创建 Release，只在确定账号、仓库名及公开发布后执行。在干净的公开源码目录中运行：
+以下为首次发布时使用的流程，现有仓库无需重新创建。后续更新提交新源码并递增标签和 Release 版本，不重跑旧版本发布命令：
 
 ```powershell
 git init -b main
@@ -72,7 +78,7 @@ gh release create v1.0.0 --repo xiaopeng66/magpie-model-lab --verify-tag --title
 
 随后在该 Release 上传验证后的 `magpie-pelican-bench-1.0.0.zip` 和 `.zip.sha256`。GitHub 自带源码压缩包也可安装，但独立 ZIP 直接包含插件根目录，便于本地添加。
 
-用户可以使用 `magpie plugin add github:xiaopeng66/magpie-model-lab` 安装默认分支，或附加 `#v1.0.0` 固定版本。后续发布保留同一仓库和包名，并递增版本。
+用户可以使用 `magpie plugin add github:xiaopeng66/magpie-model-lab` 安装默认分支，或附加 `#v1.0.1` 固定本次更新。后续发布保留同一仓库和包名，并递增版本。
 
 ## 验证发现
 
@@ -93,7 +99,7 @@ Magpie 自有社区栏目与 GitHub 非官方栏目不同；加 topic 不代表�
 ```powershell
 npm login --registry https://registry.npmjs.org
 npm whoami --registry https://registry.npmjs.org
-npm publish ./dist/magpie-pelican-bench-1.0.0.tgz --access public --registry https://registry.npmjs.org
+npm publish ./dist/magpie-pelican-bench-1.0.1.tgz --access public --registry https://registry.npmjs.org
 ```
 
 发布已检查的 `.tgz`，可确保上传的正是检查过的文件。npm 同名同版本不能覆盖重发；需要修正时发布新版本。登录、双重验证与包名权限以 npm 实际提示为准。
@@ -107,8 +113,8 @@ npm 上线后，如希望进一步通过社区 registry 搜索，可向 [registr
   "kind": "page",
   "icon": "https://raw.githubusercontent.com/xiaopeng66/magpie-model-lab/main/page/icon.png",
   "summary": {
-    "en": "Compare animations, model fingerprints and candy reasoning, with per-model scheduled tests.",
-    "zh": "比较鹈鹕动画、模型指纹与糖果推理，按模型设置自动测试并查看批次历史。"
+    "en": "Compare AI models with reasoning puzzles, IQ-style fun tests, HTML animations and model fingerprints, with scheduled monitoring. Puzzle results are not formal IQ scores.",
+    "zh": "AI 模型能力评测与对比：糖果推理、智商趣味测试、鹈鹕动画和模型指纹；支持定时自动测试。趣味结果不等同于正式智商评分。"
   }
 }
 ```

@@ -8,6 +8,7 @@
   const timer = setTimeout(() => recover("连接尚未就绪，请重试。"), 6000);
   (async () => {
   const theme = await window.magpie.ready;
+  document.documentElement.dataset.theme = theme?.dark ? "dark" : "light";
   const options = await window.magpie.options.get();
   const configured = Number(options?.port);
   const port = Number.isInteger(configured) && configured > 0 && configured < 65536 ? configured : 3489;
@@ -27,7 +28,6 @@
   }
   target.searchParams.set("theme", theme?.dark ? "dark" : "light");
   target.searchParams.set("lang", theme?.lang || "zh");
-  if (theme?.tokens) target.searchParams.set("tokens", JSON.stringify(theme.tokens));
   location.replace(target.href);
   })().catch(() => { clearTimeout(timer); recover("连接失败，请重新开启插件或重试。"); });
 })();

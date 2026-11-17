@@ -101,6 +101,18 @@ async function runnerFixture(t, options = {}) {
 }
 const fingerprintRequest = (ids = ["chat"], options = {}) => ({ kind: "fingerprint", models: ids.map(id => ({ id: "fixture/" + id, effort: "low" })), maxTokens: 32000, concurrency: 2, ...options });
 
+test("zero fingerprint concurrency starts all samples across models and still supports cancellation", async t => {
+  const { runner, upstream } = await runnerFixture(t, { handler: ({ res }) => {
+    res.writeHead(200, { "content-type": "text/event-stream" }); res.flushHeaders();
+  } });
+  const created = await runner.submit(fingerprintRequest(["chat", "responses"], { concurrency: 0 }));
+  await waitFor(() => upstream.seen.requests.length === 6);
+  assert.equal(runner.active.size, 6);
+  await runner.cancelBatch(created[0].batchId);
+  assert.ok(created.every(run => runner.get(run.id).status === "cancelled"));
+  assert.equal(runner.active.size, 0);
+});
+
 test("omitting concurrency starts three fingerprint samples but only two animation requests", async t => {
   const { runner, upstream } = await runnerFixture(t, { handler: ({ res }) => {
     res.writeHead(200, { "content-type": "text/event-stream" }); res.flushHeaders();
@@ -173,7 +185,7 @@ test("partial fingerprint scoring omits probability while strict and route-misma
 test("fingerprint validation does not download data and a large batch has no twenty-four-model or three-request ceiling", async t => {
   const ids = Array.from({ length: 25 }, (_, index) => "model-" + index);
   const { runner, upstream } = await runnerFixture(t, { models: ids, handler: ({ res }) => { res.writeHead(200, { "content-type": "text/event-stream" }); res.flushHeaders(); } });
-  for (const options of [{ concurrency: 0 }, { maxTokens: -1 }, { api: "unknown" }, { strict: "yes" }, { models: [{ id: "missing" }] }]) await assert.rejects(() => runner.submit(fingerprintRequest(ids, options)));
+  for (const options of [{ concurrency: -1 }, { maxTokens: -1 }, { api: "unknown" }, { strict: "yes" }, { models: [{ id: "missing" }] }]) await assert.rejects(() => runner.submit(fingerprintRequest(ids, options)));
   assert.equal(upstream.seen.downloads.length, 0); assert.equal(upstream.seen.requests.length, 0);
   const created = await runner.submit(fingerprintRequest(ids, { concurrency: 8, maxTokens: 131072 }));
   await waitFor(() => upstream.seen.requests.length === 8); assert.equal(created.length, 25); assert.equal(upstream.seen.peak, 8);

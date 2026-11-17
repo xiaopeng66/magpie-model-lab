@@ -19,6 +19,28 @@ const drawer = ui => ui.elements.get("drawer-content");
 const field = (ui, label) => ui.descendants(drawer(ui), "label").find(row => row.children[0]?.textContent === label)?.children[1];
 async function open(ui) { await waitFor(() => ui.descendants(ui.elements.get("model-list"), "input").length); await ui.elements.get("favorites-tab").fire("click"); }
 
+test("animation positioning resumes after a hidden frame and resets on return from every test page", async () => {
+  const animationPlan = { ...plan, kinds: ["pelican"] };
+  const latest = { ...run, kind: "pelican", plans: [{ id: plan.id, triggerKey: plan.today.slots[1].key }] };
+  const state = { ...boot.favorites, plans: [animationPlan] };
+  const ui = await uiHarness({ bootstrap: { ...boot, runs: [latest], favorites: state }, favorites: () => state, now: () => Date.parse("2026-11-14T15:00:00Z") });
+  await open(ui); await ui.elements.get("favorite-pelican").fire("click");
+  const lane = ui.descendants(ui.elements.get("favorite-results")).find(element => element.className === "animation-lane");
+  lane.children.forEach((cell, index) => { cell.getBoundingClientRect = () => ({ left: index * 210 - lane.scrollLeft }); });
+  await ui.elements.get("history-tab").fire("click"); ui.flushFrames();
+  assert.equal(lane.scrollLeft, 0);
+  await ui.elements.get("favorites-tab").fire("click"); ui.flushFrames();
+  assert.equal(lane.scrollLeft, 210, "A skipped hidden-page frame must not mark the latest animation as already positioned");
+  for (const view of ["current", "fingerprint", "candy", "history"]) {
+    lane.scrollLeft = 330;
+    await ui.elements.get(`${view}-tab`).fire("click"); await ui.elements.get("favorites-tab").fire("click"); ui.flushFrames();
+    assert.equal(lane.scrollLeft, 210, `Returning from ${view} must reposition the nearest elapsed slot`);
+  }
+  lane.scrollLeft = 330;
+  await ui.elements.get("favorites-tab").fire("click"); ui.flushFrames();
+  assert.equal(lane.scrollLeft, 330, "Clicking the already active page must preserve manual scrolling");
+});
+
 test("automatic plan summaries are read-only and each model opens settings from its header", async () => {
   const two = { ...favorite, id: "f-two", modelId: "fixture/two", modelName: "Second" };
   const ui = await uiHarness({ bootstrap: { ...boot, runs: [], favorites: { ...boot.favorites, favorites: [favorite, two] } } }); await open(ui);
@@ -142,14 +164,99 @@ test("animation gallery groups every daily time in the same model row and preser
   assert.ok(ui.descendants(ui.elements.get("favorite-results")).find(e => e.className === "animation-lane") === lane, "last-run metadata must preserve the lane"); assert.equal(lane.scrollLeft, 180);
 });
 
-test("zero token setting submits in all three normal modes and negative input is rejected", async () => {
+test("zero token and concurrency settings submit in all three normal modes and invalid input is rejected", async () => {
   const sent = []; const ui = await uiHarness({ bootstrap: { ...boot, runs: [] }, create: body => { sent.push(body); return { runs: [{ ...run, id: "new-" + sent.length, batchId: "batch-" + sent.length, kind: body.kind || "pelican" }] }; } });
   await waitFor(() => ui.descendants(ui.elements.get("model-list"), "input").length);
   const input = ui.descendants(ui.elements.get("model-list"), "input")[0]; input.checked = true; await input.fire("change");
   assert.equal(ui.elements.get("max-tokens").value, "64000"); ui.elements.get("max-tokens").value = "0";
-  for (const tab of ["current", "candy", "fingerprint"]) { await ui.elements.get(tab + "-tab").fire("click"); await ui.elements.get("generate").fire("click"); }
-  assert.equal(sent.length, 3); assert.ok(sent.every(body => body.maxTokens === 0));
+  for (const tab of ["current", "candy", "fingerprint"]) { await ui.elements.get(tab + "-tab").fire("click"); ui.elements.get("concurrency").value = "0"; await ui.elements.get("generate").fire("click"); }
+  assert.equal(sent.length, 3); assert.ok(sent.every(body => body.maxTokens === 0 && body.concurrency === 0));
+  await ui.elements.get("current-tab").fire("click"); assert.equal(ui.elements.get("concurrency").value, "0");
   ui.elements.get("max-tokens").value = "-1"; await ui.elements.get("generate").fire("click"); assert.equal(sent.length, 3);
+  ui.elements.get("max-tokens").value = "0";
+  for (const value of ["-1", "1.5", ""]) { ui.elements.get("concurrency").value = value; await ui.elements.get("generate").fire("click"); }
+  assert.equal(sent.length, 3);
+});
+
+test("automatic concurrency is directly visible and saves zero without a disclosure", async () => {
+  const calls = [], state = structuredClone(boot.favorites);
+  const ui = await uiHarness({ bootstrap: { ...boot, runs: [] }, favorites: (path, body) => { calls.push([path, body]); return state; } }); await open(ui);
+  await ui.elements.get("favorite-manage").fire("click");
+  const limit = field(ui, "自动请求并行数");
+  assert.ok(limit.getClientRects().length > 0, "The concurrency input must be visible as soon as management opens");
+  limit.value = "0";
+  await buttons(ui, drawer(ui)).find(control => control.textContent === "保存并行数").fire("click");
+  assert.deepEqual(calls.find(([path]) => path === "api/schedules/settings")?.[1], { concurrency: 0 });
+});
+
+test("animation timeline starts at the latest result and follows new work without resetting ordinary manual scrolling", async () => {
+  let now = Date.parse("2026-11-14T15:00:00Z");
+  const animationPlan = { ...plan, kinds: ["pelican"] };
+  const older = { ...run, kind: "pelican", status: "completed", hasHTML: true };
+  const latest = { ...older, id: "animation-noon", status: "running", hasHTML: false, plans: [{ id: plan.id, triggerKey: plan.today.slots[1].key }] };
+  const state = { ...boot.favorites, plans: [animationPlan] };
+  const setup = async (records, search = "") => {
+    const ui = await uiHarness({ bootstrap: { ...boot, favorites: state, runs: records }, favorites: () => state, intersection: true, search, now: () => now });
+    if (!search) { await open(ui); await ui.elements.get("favorite-pelican").fire("click"); }
+    else await waitFor(() => !ui.elements.get("favorites-panel").hidden && !ui.elements.get("favorite-results").hidden);
+    const lane = ui.descendants(ui.elements.get("favorite-results")).find(element => element.className === "animation-lane");
+    lane.clientWidth = 600;
+    lane.getBoundingClientRect = () => ({ left: 50, width: 600 });
+    lane.children.forEach((cell, index) => { cell.getBoundingClientRect = () => ({ left: 52 + index * 210 - lane.scrollLeft, width: 200 }); });
+    ui.flushFrames();
+    return { ui, lane };
+  };
+  const { ui, lane } = await setup([older, latest]);
+  assert.deepEqual(ui.descendants(lane).filter(element => element.className === "animation-time").map(element => element.textContent), ["18:00", "12:00", "09:00"]);
+  assert.equal(lane.scrollLeft, 210, "Skip future placeholders and align the nearest elapsed slot to the left");
+  lane.scrollLeft = 330;
+  ui.event("run", { run: { ...latest, tokens: { output: 100 } } });
+  await new Promise(resolve => setTimeout(resolve, 20)); ui.flushFrames();
+  assert.equal(lane.scrollLeft, 330, "Streaming updates must not fight manual scrolling");
+  now = Date.parse("2026-11-14T18:00:00Z");
+  const newest = { ...latest, id: "animation-evening", plans: [{ id: plan.id, triggerKey: plan.today.slots[2].key }] };
+  ui.event("run", { run: newest });
+  await waitFor(() => ui.descendants(lane).some(element => element.dataset.runId === newest.id)); ui.flushFrames();
+  assert.equal(lane.scrollLeft, 0, "New work must be brought into view automatically");
+  lane.scrollLeft = 330;
+  assert.equal(new URLSearchParams(ui.location.search).get("automatic"), "pelican");
+  const reloaded = await setup([older, latest, newest], ui.location.search);
+  assert.equal(reloaded.lane.scrollLeft, 0, "A reload must forget manual horizontal scroll position");
+});
+
+for (const status of ["error", "cancelled", "interrupted", "invalid", "truncated", "queued"]) test(`animation gallery selects the nearest elapsed ${status} result ahead of older HTML`, async () => {
+  const animationPlan = { ...plan, kinds: ["pelican"] };
+  const older = { ...run, kind: "pelican", status: "completed", hasHTML: true };
+  const latest = { ...older, id: "latest-attempt", status, hasHTML: false, plans: [{ id: plan.id, triggerKey: plan.today.slots[1].key }] };
+  const state = { ...boot.favorites, plans: [animationPlan] };
+  const ui = await uiHarness({ bootstrap: { ...boot, favorites: state, runs: [older, latest] }, favorites: () => state, intersection: true,
+    now: () => Date.parse("2026-11-14T15:00:00Z"), search: "?view=favorites&automatic=pelican" });
+  await waitFor(() => !ui.elements.get("favorite-results").hidden);
+  const lane = ui.descendants(ui.elements.get("favorite-results")).find(element => element.className === "animation-lane");
+  lane.children.forEach((cell, index) => { cell.getBoundingClientRect = () => ({ left: index * 210 - lane.scrollLeft }); });
+  ui.flushFrames();
+  assert.equal(lane.scrollLeft, 210);
+  assert.ok(ui.descendants(lane.children[1]).some(element => element.dataset.runId === latest.id));
+  assert.ok(ui.descendants(lane.children[1]).some(element => element.dataset.state === status));
+  lane.scrollLeft = 330;
+  ui.event("favorites", {});
+  await new Promise(resolve => setTimeout(resolve, 20)); ui.flushFrames();
+  assert.equal(lane.scrollLeft, 330, "Refreshing schedule metadata must preserve manual scrolling");
+});
+
+test("animation gallery follows elapsed placeholders and skips future slots without requiring a successful run", async () => {
+  let now = Date.parse("2026-11-14T08:00:00Z");
+  const animationPlan = { ...plan, kinds: ["pelican"] }, state = { ...boot.favorites, plans: [animationPlan] };
+  const ui = await uiHarness({ bootstrap: { ...boot, favorites: state, runs: [] }, favorites: () => state, now: () => now });
+  await open(ui); await ui.elements.get("favorite-pelican").fire("click");
+  const lane = ui.descendants(ui.elements.get("favorite-results")).find(element => element.className === "animation-lane");
+  lane.children.forEach((cell, index) => { cell.getBoundingClientRect = () => ({ left: index * 210 - lane.scrollLeft }); });
+  ui.flushFrames();
+  assert.equal(lane.scrollLeft, 420, "Before the first slot, show the first upcoming time");
+  now = Date.parse("2026-11-14T12:00:00Z");
+  ui.event("favorites", {});
+  await waitFor(() => ui.pendingFrames() > 0); ui.flushFrames();
+  assert.equal(lane.scrollLeft, 210, "An elapsed empty slot must replace the previous time as the default target");
 });
 
 test("an open automatic candy record updates answer and copy text when generation finishes", async () => {
