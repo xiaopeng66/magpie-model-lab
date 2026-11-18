@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { uiHarness } from "./ui-harness.mjs";
+import { confirmClick, uiHarness } from "./ui-harness.mjs";
 import { waitFor } from "./helpers.mjs";
 import { startServer } from "../lib/server.mjs";
 import { temporary, FIXTURE_HTML } from "./helpers.mjs";
@@ -102,8 +102,9 @@ test("a delayed plan save cannot replace a result drawer opened more recently", 
   const ui = await uiHarness({ bootstrap: boot, detail: id => ({ ...runs.find(run => run.id === id), content: "保存期间打开的回答" }), favorites: async path => path === "api/schedules/save" ? pending : boot.favorites });
   await waitFor(() => ui.descendants(ui.elements.get("model-list"), "input").length);
   await ui.elements.get("favorites-tab").fire("click"); await ui.descendants(ui.elements.get("favorite-candy-grid"), "button").find(e => e.attributes["aria-label"] === "设置 Fixture 的糖果计划").fire("click");
-  const buttons = () => ui.descendants(ui.elements.get("drawer-content"), "button");
-  const saving = buttons().find(button => button.textContent === "保存计划").fire("click");
+  const times = ui.descendants(ui.elements.get("drawer-content"), "label").find(row => row.children[0]?.textContent === "每天这些时刻 · 逗号分隔").children[1];
+  times.value = "10:00"; await times.fire("input");
+  const saving = ui.descendants(ui.elements.get("drawer-footer"), "button").find(button => button.textContent === "保存计划").fire("click");
   await ui.elements.get("drawer-close").fire("click");
   await ui.descendants(ui.elements.get("favorite-candy-grid"), "button").find(button => button.className === "candy-bar").fire("click");
   release({ plan: {} }); await saving;
@@ -117,7 +118,7 @@ test("automatic UI adds models, saves independent disabled plans without invokin
   service = await startServer({ port: 0, dataDir: await temporary(t), gatewayUrl: upstream.url });
   const token = (await (await fetch(service.url)).text()).match(/name="pelican-token" content="([a-f0-9]+)"/)[1];
   const ui = await uiHarness({ token, request: (path, options) => fetch(new URL(path, service.url), options) });
-  const drawer = () => ui.elements.get("drawer-content"), findButton = label => ui.descendants(drawer(), "button").find(button => button.textContent === label);
+  const drawer = () => ui.elements.get("drawer-content"), findButton = label => [drawer(), ui.elements.get("drawer-footer")].flatMap(root => ui.descendants(root, "button")).find(button => button.textContent === label);
   const findField = label => ui.descendants(drawer(), "label").find(row => row.children[0]?.textContent === label)?.children[1];
   await waitFor(() => ui.descendants(ui.elements.get("model-list"), "input").length === 1);
   const pick = ui.descendants(ui.elements.get("model-list"), "input")[0]; pick.checked = true; await pick.fire("change");
@@ -128,8 +129,11 @@ test("automatic UI adds models, saves independent disabled plans without invokin
   const headers = { "x-pelican-token": token }, config = await (await fetch(service.url + "api/favorites", { headers })).json();
   assert.deepEqual(config.plans[0].times, ["09:00", "18:00"]); assert.equal(config.plans[0].enabled, false); assert.equal(config.favorites[0].maxTokens, 64000);
   assert.equal(upstream.seen.requests.length, 0, "Adding or saving a disabled plan must never invoke the model");
-  await ui.elements.get("favorite-manage").fire("click"); await findButton("编辑").fire("click"); findField("输出上限 · Token").value = "0"; await findButton("保存参数").fire("click");
+  await ui.elements.get("favorite-manage").fire("click"); await findButton("编辑").fire("click");
+  const tokens = findField("输出上限 · Token"); tokens.value = "0"; await tokens.fire("input");
+  await findButton("完成编辑").fire("click"); await findButton("保存设置").fire("click");
   const changed = await (await fetch(service.url + "api/favorites", { headers })).json(); assert.equal(changed.favorites[0].maxTokens, 0);
-  await ui.elements.get("favorite-manage").fire("click"); await findButton("移除").fire("click");
+  await ui.elements.get("favorite-manage").fire("click");
+  await (await confirmClick(ui, findButton("移除模型"))).completion; await findButton("保存设置").fire("click");
   const final = await (await fetch(service.url + "api/favorites", { headers })).json(); assert.equal(final.favorites.length, 0); assert.equal(final.plans.length, 0);
 });

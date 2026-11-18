@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { startServer } from "../lib/server.mjs";
-import { uiHarness } from "./ui-harness.mjs";
+import { confirmClick, uiHarness } from "./ui-harness.mjs";
 import { waitFor, fakeGateway, temporary, FIXTURE_HTML } from "./helpers.mjs";
 
 const id = "70158f4b-7844-459d-85dc-3c1cdd0d0164";
@@ -186,11 +186,14 @@ test("cleanup controls send all or a UTC cutoff and update history after the res
   await waitFor(() => ui.elements.get("history-count").textContent === "1 批");
   const all = ui.elements.get("clear-all"), before = ui.elements.get("clear-before"), time = ui.elements.get("cleanup-before");
   assert.ok(all && before && time, "History needs both cleanup actions");
-  await all.fire("click");
+  await (await confirmClick(ui, all, false)).completion;
+  assert.equal(calls.length, 0);
+  assert.equal(ui.elements.get("history-count").textContent, "1 批");
+  await (await confirmClick(ui, all)).completion;
   assert.deepEqual(calls[0], { mode: "all" });
   assert.equal(ui.elements.get("history-count").textContent, "0 批");
   time.value = "2026-11-13T08:30";
-  await before.fire("click");
+  await (await confirmClick(ui, before)).completion;
   assert.deepEqual(calls[1], { mode: "before", before: new Date("2026-11-13T08:30").toISOString() });
 });
 
@@ -241,7 +244,7 @@ test("cleanup rejects nonexistent local calendar dates and prevents overlapping 
   const input = ui.elements.get("cleanup-before"), before = ui.elements.get("clear-before"), all = ui.elements.get("clear-all");
   input.value = "2026-02-31 08:30"; await before.fire("click");
   assert.equal(calls, 0); assert.match(ui.elements.get("cleanup-status").textContent, /有效/); assert.equal(input.attributes["aria-invalid"], "true");
-  input.value = "2026-11-13 08:30"; const clearing = before.fire("click"); await waitFor(() => calls === 1);
+  input.value = "2026-11-13 08:30"; const { completion: clearing } = await confirmClick(ui, before); await waitFor(() => calls === 1);
   assert.equal(before.disabled, true); assert.equal(all.disabled, true);
   await all.fire("click"); await before.fire("click"); assert.equal(calls, 1);
   release(); await clearing; assert.equal(all.disabled, false); assert.equal(before.disabled, false); assert.equal(input.attributes["aria-invalid"], undefined);
@@ -467,7 +470,7 @@ test("tab keyboard navigation disables generation in history until a test tab is
   assert.equal(ui.descendants(ui.elements.get("results"), "article")[0].dataset.runId, id);
 });
 
-test("history selection stays identified during updates and reopening the same batch preserves its preview", async () => {
+test("history selection stays identified during updates and closes when pressed again", async () => {
   const earlierId = "828715f8-bf8c-4669-a027-66b13e432291";
   const earlier = { ...run, id: earlierId, batchId: earlierId, createdAt: "2026-11-11T00:00:00Z" };
   const ui = await uiHarness({ bootstrap: boot([run, earlier]), detail: async value => ({ ...(value === earlierId ? earlier : run), html: FIXTURE_HTML, previewUrl: `preview/${value}?key=test` }) });
@@ -477,11 +480,13 @@ test("history selection stays identified during updates and reopening the same b
   const frame = ui.descendants(ui.elements.get("history-results"), "iframe")[0];
   assert.equal(historyRows(ui)[1].attributes["aria-pressed"], "true", "The selected historical batch must be identified to keyboard and screen-reader users");
   assert.equal(historyRows(ui)[0].attributes["aria-pressed"], "false");
-  await historyRows(ui)[1].fire("click");
-  assert.equal(ui.descendants(ui.elements.get("history-results"), "iframe")[0], frame, "Reopening the selected batch must not restart its animation");
   ui.event("run", { run: { ...run, elapsedMs: 2000 } });
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(historyRows(ui)[1].attributes["aria-pressed"], "true", "Live updates must keep the historical selection identified");
+  assert.equal(ui.descendants(ui.elements.get("history-results"), "iframe")[0], frame);
+  await historyRows(ui)[1].fire("click");
+  assert.equal(ui.elements.get("history-detail").hidden, true);
+  assert.equal(historyRows(ui)[1].attributes["aria-pressed"], "false");
   await historyRows(ui)[0].fire("click");
   assert.equal(historyRows(ui)[0].attributes["aria-pressed"], "true");
   assert.equal(historyRows(ui)[1].attributes["aria-pressed"], "false");
@@ -499,7 +504,7 @@ test("each history batch can be deleted while the current preview and other batc
   const frame = ui.descendants(ui.elements.get("results"), "iframe")[0];
   assert.equal(historyDeletes(ui).length, 2, "Every batch needs its own delete button");
   const remove = historyDeletes(ui)[1];
-  const deleting = remove.fire("click"); await waitFor(() => calls.length === 1);
+  const { completion: deleting } = await confirmClick(ui, remove); await waitFor(() => calls.length === 1);
   await remove.fire("click"); assert.equal(calls.length, 1, "A pending deletion must not be submitted twice");
   assert.deepEqual(calls[0], { mode: "batch", batchId: earlierId });
   release(); await deleting;
@@ -529,11 +534,11 @@ test("failed batch deletion keeps its row and exposes a retryable error", async 
   } });
   await waitFor(() => ui.elements.get("history-count").textContent === "1 批");
   assert.equal(historyDeletes(ui).length, 1);
-  await historyDeletes(ui)[0].fire("click");
+  await (await confirmClick(ui, historyDeletes(ui)[0])).completion;
   assert.equal(ui.elements.get("history-count").textContent, "1 批");
   assert.equal(ui.elements.get("history-status").textContent, "disk unavailable");
   assert.equal(historyDeletes(ui)[0].disabled, false);
-  await historyDeletes(ui)[0].fire("click");
+  await (await confirmClick(ui, historyDeletes(ui)[0])).completion;
   assert.equal(ui.elements.get("history-count").textContent, "0 批");
   assert.equal(ui.descendants(ui.elements.get("results"), "article").length, 0);
 });
@@ -586,8 +591,22 @@ test("later batch members appear without restarting previews already displayed",
   ui.event("run", { run: { ...run, id: otherId, model: "other/one", status: "queued", hasHTML: false } });
   await waitFor(() => ui.descendants(ui.elements.get("history-list"), "span").some(element => element.textContent.endsWith("2 个模型")));
   assert.equal(ui.descendants(ui.elements.get("results"), "article").length, 2, "The displayed batch must include members received after it was opened");
-  assert.equal(ui.elements.get("batch-note").textContent, "2 个模型");
+  assert.match(ui.elements.get("batch-note").textContent, /2 个模型 · 2 份结果$/);
   assert.equal(ui.descendants(ui.elements.get("results"), "iframe")[0], original);
+});
+
+test("a newly received member does not restart the selected history animation", async () => {
+  const other = { ...run, id: "5aa8298a-5c64-4c90-aa42-dbe23c659b78", model: "other/two", status: "queued", hasHTML: false };
+  const ui = await uiHarness({ bootstrap: boot([run]), search: "?view=history", detail: () => ({ ...run, html: FIXTURE_HTML, previewUrl: `preview/${id}?key=test` }) });
+  await waitFor(() => historyRows(ui).length === 1);
+  await historyRows(ui)[0].fire("click");
+  const results = ui.elements.get("history-results"), scroll = ui.elements.get("history-preview-scroll");
+  const original = await waitFor(() => ui.descendants(results, "iframe")[0]);
+  scroll.scrollTop = 80;
+  ui.event("run", { run: other });
+  await waitFor(() => ui.descendants(results, "article").length === 2);
+  assert.equal(ui.descendants(results, "iframe")[0], original);
+  assert.equal(scroll.scrollTop, 80);
 });
 
 test("switching history batches releases old observers and deleting records releases both views", async () => {
@@ -602,7 +621,7 @@ test("switching history batches releases old observers and deleting records rele
   await historyRows(ui)[0].fire("click");
   await waitFor(() => ui.descendants(ui.elements.get("history-results"), "iframe").length === 1);
   assert.equal(ui.observed.has(oldZone), false, "Detached cards must stop retaining observer references");
-  assert.equal(ui.observed.size, 2, "Current and historical cards each retain their own observer");
+  assert.equal(ui.observed.size, 3, "Current, recent, and selected history cards each retain their own observer");
   ui.event("removed", { ids: [earlierId, id] });
   await waitFor(() => ui.descendants(ui.elements.get("results"), "article").length === 0);
   assert.equal(ui.descendants(ui.elements.get("history-results"), "article").length, 0);
@@ -815,7 +834,11 @@ test("history batch deletion through the UI removes stored files and keeps the c
   await waitFor(() => ui.descendants(ui.elements.get("history-results"), "iframe").length === 1);
   assert.equal(ui.descendants(ui.elements.get("history-results"), "article")[0].dataset.runId, first.id);
   assert.ok(await readFile(first.files.html, "utf8"));
-  await historyDeletes(ui)[1].fire("click");
+  await ui.elements.get("manage-history").fire("click");
+  await (await confirmClick(ui, historyDeletes(ui)[1], false)).completion;
+  assert.equal(ui.elements.get("history-count").textContent, "2 批");
+  assert.ok(await readFile(first.files.html, "utf8"));
+  await (await confirmClick(ui, historyDeletes(ui)[1])).completion;
   assert.equal(ui.elements.get("history-count").textContent, "1 批");
   await assert.rejects(() => readFile(first.files.html), error => error.code === "ENOENT");
   await assert.rejects(() => readFile(first.files.metadata), error => error.code === "ENOENT");

@@ -1,11 +1,23 @@
 import { readFile } from "node:fs/promises";
 import { runInNewContext } from "node:vm";
+import { batchKey, historyBatches, historyTime, recentTestBatches } from "../lib/history-groups.mjs";
+import { renderDailyHistory } from "../ui/history-preview.mjs";
+
+export async function confirmClick(ui, control, accept = true) {
+  const completion = control.fire("click");
+  if (!ui.elements.get("confirm-dialog").open) {
+    await completion;
+    throw new Error("Expected a confirmation dialog");
+  }
+  await ui.elements.get(accept ? "confirm-accept" : "confirm-cancel").fire("click");
+  return { completion };
+}
 
 class Element {
   constructor(tag = "div") {
     this.tagName = tag.toUpperCase(); this.children = []; this.handlers = {}; this.attributes = {}; this.dataset = {};
     this.hidden = false; this.value = ""; this.checked = false; this.disabled = false; this.className = ""; this._textContent = ""; this.textWrites = 0; this.replacements = 0;
-    this.clientWidth = 200; this.clientHeight = 120; this.scrollLeft = 0;
+    this.clientWidth = 200; this.clientHeight = 120; this.scrollLeft = 0; this.scrollTop = 0;
     if (tag === "iframe") this.contentWindow = {};
     this.style = { setProperty: (name, value) => { this.style[name] = value; } };
     this.classList = { add: (name) => { this.className += " " + name; }, remove: (name) => { this.className = this.className.replace(name, ""); },
@@ -14,17 +26,28 @@ class Element {
   get textContent() { return this._textContent; }
   set textContent(value) { this._textContent = value; this.textWrites++; }
   get isConnected() { return this.parent ? this.parent.isConnected : Boolean(this._connected); }
+  get parentElement() { return this.parent; }
+  get firstElementChild() { return this.children[0] || null; }
+  get scrollWidth() { return this.clientWidth + (this.className.includes("animation-lane") ? this.children.length * 210 : 0); }
   append(...nodes) { for (const node of nodes) { node.remove(); node.parent = this; this.children.push(node); } }
   insertBefore(node, before) { node.remove(); const index = this.children.indexOf(before); node.parent = this; if (index < 0) this.children.push(node); else this.children.splice(index, 0, node); }
+  prepend(node) { this.insertBefore(node, this.children[0]); }
+  scrollBy(options) { this.scrollLeft += options.left || 0; }
   after(node) { this.parent?.append(node); }
   replaceChildren(...nodes) { for (const child of this.children) child.parent = null; this.children = []; this.replacements++; this.textContent = ""; this.append(...nodes); }
   remove() { if (this.parent) this.parent.children = this.parent.children.filter((node) => node !== this); this.parent = null; }
   contains(node) { return this === node || this.children.some(child => child.contains(node)); }
   getBoundingClientRect() { return this.rect || { left: 0, top: 0, right: this.clientWidth, bottom: this.clientHeight, width: this.clientWidth, height: this.clientHeight }; }
   getClientRects() { for (let item = this; item; item = item.parent) { if (item.hidden || item.parent?.tagName === "DETAILS" && !item.parent.open && item.tagName !== "SUMMARY") return []; } return this.isConnected ? [this.getBoundingClientRect()] : []; }
-  querySelectorAll() {
+  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+  querySelectorAll(selector) {
     const results = [];
-    const visit = item => { for (const child of item.children) { if (!child.disabled && (["BUTTON", "INPUT", "SELECT", "TEXTAREA", "SUMMARY", "A"].includes(child.tagName) || child.getAttribute("tabindex") !== null)) results.push(child); visit(child); } };
+    const matches = (child, part) => {
+      if (part.startsWith(".")) return child.className.split(/\s+/).includes(part.slice(1));
+      if (part.startsWith("[")) return child.getAttribute(part.slice(1, -1)) !== null;
+      return child.tagName === part.split(/[:\[]/, 1)[0].toUpperCase() && (!part.includes(":disabled") || !child.disabled);
+    };
+    const visit = item => { for (const child of item.children) { if (selector.split(/,\s*/).some(part => matches(child, part))) results.push(child); visit(child); } };
     visit(this); return results;
   }
   addEventListener(type, listener) { (this.handlers[type] ||= []).push(listener); }
@@ -33,15 +56,18 @@ class Element {
   removeAttribute(name) { delete this.attributes[name]; }
   focus() { this.focused = true; if (this.ownerDocument) this.ownerDocument.activeElement = this; }
   select() { this.selectionStart = 0; this.selectionEnd = this.value.length; }
-  async fire(type, details = {}) { for (const listener of this.handlers[type] || []) await listener({ preventDefault() {}, target: this, ...details }); }
+  showModal() { this.open = true; this.querySelector("[autofocus]")?.focus(); }
+  close() { this.open = false; }
+  async fire(type, details = {}) { for (const listener of [...(this.handlers[type] || []), this[`on${type}`]].filter(Boolean)) await listener({ preventDefault() {}, target: this, ...details }); }
 }
 
 export async function uiHarness({ bootstrap, detail, create, cleanup, open, openStorage, bank, accounts, exportBatch, favorites, writeClipboard, request, intersection = false, navigate = () => {}, search = "", viewport = { width: 1024, height: 768 }, token = "test-only-token", now = Date.now }) {
-  const source = await readFile(new URL("../ui/favorites.js", import.meta.url), "utf8") + "\n" + await readFile(new URL("../ui/app.js", import.meta.url), "utf8");
+  const source = await readFile(new URL("../ui/favorites.js", import.meta.url), "utf8") + "\n" + (await readFile(new URL("../ui/app.js", import.meta.url), "utf8")).replace(/^import .*;\r?\n/gm, "");
   const html = await readFile(new URL("../ui/index.html", import.meta.url), "utf8");
   const elements = new Map([...html.matchAll(/<([a-z][\w:-]*)\b[^>]*\bid="([^"]+)"[^>]*>/gi)].map(match => {
     const element = new Element(match[1]); element.hidden = /\shidden(?:\s|>)/.test(match[0]);
     for (const attribute of match[0].matchAll(/\b(aria-[\w-]+|tabindex)="([^"]*)"/g)) element.setAttribute(attribute[1], attribute[2]);
+    if (/\sautofocus(?:\s|>)/.test(match[0])) element.setAttribute("autofocus", "");
     const tail = html.slice(match.index + match[0].length), plain = /^([^<]+)<\//.exec(tail); if (plain) element.textContent = plain[1];
     return [match[2], element];
   }));
@@ -53,7 +79,10 @@ export async function uiHarness({ bootstrap, detail, create, cleanup, open, open
   const app = new Element("main"), document = { getElementById: (id) => elements.get(id), createElement: (tag) => Object.assign(new Element(tag), { ownerDocument: document }), createElementNS: (_namespace, tag) => Object.assign(new Element(tag), { ownerDocument: document }),
     querySelector: selector => selector === "main.app" ? app : selector.includes("pelican-token") ? { content: token } : null, documentElement: new Element("html"), activeElement: null };
   for (const element of [app, document.documentElement, ...elements.values()]) { element.ownerDocument = document; element._connected = true; }
-  elements.get("favorite-drawer").append(elements.get("drawer-backdrop"), elements.get("drawer-close"), elements.get("drawer-content"), elements.get("drawer-status"));
+  elements.get("favorite-drawer").append(...["drawer-backdrop", "drawer-back", "drawer-title", "drawer-close", "drawer-content", "drawer-status", "drawer-footer"].map(id => elements.get(id)));
+  elements.get("export-panel").append(elements.get("export-close"));
+  const tabs = new Element(), window = { scrollY: 0, scrollTo({ top }) { this.scrollY = top; }, scrollBy({ top }) { this.scrollY += top; } };
+  app.append(tabs); tabs.append(...["current", "fingerprint", "candy", "favorites", "history"].map(name => elements.get(`${name}-tab`)));
   let controller;
   const makeWire = () => new ReadableStream({ start(stream) { controller = stream; } });
   const event = (name, data) => controller.enqueue(new TextEncoder().encode(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`));
@@ -95,7 +124,8 @@ export async function uiHarness({ bootstrap, detail, create, cleanup, open, open
     constructor(...args) { super(...(args.length ? args : [now()])); }
     static now() { return now(); }
   }
-  runInNewContext(source, { Date: TestDate, document, fetch, parent, history, navigator: { clipboard: { writeText: writeClipboard || (async value => copied.push(value)) } }, location, matchMedia: () => ({ matches: false }), CSS: { supports: () => true },
+  runInNewContext(source, { Date: TestDate, document, fetch, window, parent, history, structuredClone, batchKey, historyBatches, historyTime, recentTestBatches, renderDailyHistory,
+    navigator: { clipboard: { writeText: writeClipboard || (async value => copied.push(value)) } }, location, matchMedia: () => ({ matches: false }), CSS: { supports: () => true },
     URLSearchParams, Response, TextDecoder, ResizeObserver, ...(intersection ? { IntersectionObserver } : {}), innerWidth: viewport.width, innerHeight: viewport.height, setInterval() {}, setTimeout(callback) { timers.set(++nextTimer, callback); return nextTimer; }, clearTimeout(id) { timers.delete(id); },
     requestAnimationFrame(listener) { frames.set(++nextFrame, listener); return nextFrame; }, cancelAnimationFrame(id) { frames.delete(id); },
     addEventListener(type, listener) { (listeners[type] ||= []).push(listener); }, console });

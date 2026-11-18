@@ -13,6 +13,7 @@ const run = { id: "one", batchId: "batch-one", kind: "candy", model: model.id, m
 const boot = { models: [model], runs: [run], defaultPrompt: "animate", favoritesAvailable: true, candyAvailable: true, fingerprintAvailable: true, batchCleanup: true,
   favorites: { favorites: [favorite], plans: [plan], concurrency: 3, maxDailySlots: 24 } };
 const drawer = ui => ui.elements.get("drawer-content");
+const footer = ui => ui.elements.get("drawer-footer");
 const grid = ui => ui.elements.get("favorite-candy-grid");
 const buttons = (ui, root) => ui.descendants(root, "button");
 const label = (ui, root, value) => buttons(ui, root).find(item => item.textContent === value || item.getAttribute("aria-label") === value);
@@ -36,7 +37,8 @@ test("saving a plan stays locked while input changes and cannot submit twice", a
   const waiting = deferred(), calls = []; t.after(() => waiting.resolve({ plan }));
   const ui = await uiHarness({ bootstrap: boot, favorites: (path, body) => { if (path.endsWith("save")) { calls.push(body); return waiting.promise; } return boot.favorites; } });
   await ready(ui); await settings(ui);
-  const save = label(ui, drawer(ui), "保存计划"), saving = save.fire("click");
+  field(ui, "每天这些时刻 · 逗号分隔").value = "10:30"; await field(ui, "每天这些时刻 · 逗号分隔").fire("input");
+  const save = label(ui, footer(ui), "保存计划"), saving = save.fire("click");
   field(ui, "每天这些时刻 · 逗号分隔").value = "10:00"; await field(ui, "每天这些时刻 · 逗号分隔").fire("input");
   assert.equal(save.disabled, true); await save.fire("click"); assert.equal(calls.length, 1);
   waiting.resolve({ plan }); await saving;
@@ -49,7 +51,8 @@ test("inactive interval drafts do not block a valid specified-time plan", async 
   field(ui, "执行方式").value = "interval"; await field(ui, "执行方式").fire("change");
   field(ui, "间隔 · 分钟").value = ""; field(ui, "开始时间").value = "";
   field(ui, "执行方式").value = "times"; await field(ui, "执行方式").fire("change");
-  await label(ui, drawer(ui), "保存计划").fire("click");
+  field(ui, "每天这些时刻 · 逗号分隔").value = "10:30"; await field(ui, "每天这些时刻 · 逗号分隔").fire("input");
+  await label(ui, footer(ui), "保存计划").fire("click");
   assert.equal(sent.mode, "times");
   assert.equal(sent.intervalMinutes, undefined, "Inactive inputs must be omitted so valid server defaults/prior values apply");
   assert.equal(sent.start, undefined);
@@ -58,15 +61,16 @@ test("inactive interval drafts do not block a valid specified-time plan", async 
 test("invalid timezone is shown before saving and correcting it restores save", async () => {
   const ui = await uiHarness({ bootstrap: boot }); await ready(ui); await settings(ui);
   field(ui, "时区").value = "invalid/nowhere"; await field(ui, "时区").fire("input");
-  assert.equal(label(ui, drawer(ui), "保存计划").disabled, true);
-  field(ui, "时区").value = "Asia/Shanghai"; await field(ui, "时区").fire("input");
-  assert.equal(label(ui, drawer(ui), "保存计划").disabled, false);
+  assert.equal(label(ui, footer(ui), "保存计划").disabled, true);
+  field(ui, "时区").value = "UTC"; await field(ui, "时区").fire("input");
+  assert.equal(label(ui, footer(ui), "保存计划").disabled, false);
 });
 
-test("nested editor closes back to the visible model settings button and starts scrolled to top", async () => {
-  const ui = await uiHarness({ bootstrap: boot }); await ready(ui); const opener = await settings(ui);
-  drawer(ui).scrollTop = 500; await label(ui, drawer(ui), "模型参数").fire("click");
-  assert.equal(drawer(ui).scrollTop, 0); await ui.elements.get("drawer-close").fire("click");
+test("plan parameters are visible without a nested editor and closing restores focus", async () => {
+  const ui = await uiHarness({ bootstrap: boot }); await ready(ui);
+  drawer(ui).scrollTop = 500; const opener = await settings(ui);
+  assert.equal(drawer(ui).scrollTop, 0); assert.ok(field(ui, "输出上限 · Token").getClientRects().length);
+  await ui.elements.get("drawer-close").fire("click");
   assert.ok(ui.document.activeElement === opener); assert.equal(opener.isConnected, true);
 });
 
@@ -152,7 +156,7 @@ test("late create failure remains visible after switching from a test to history
 
 test("model labels handle unprefixed IDs and legacy records without a model ID", async () => {
   const plain = { ...model, id: "plain-model", name: "plain-model", provider: "plain-model", providerName: "" };
-  const ui = await uiHarness({ bootstrap: { ...boot, models: [plain], runs: [{ ...run, model: undefined, modelName: "旧记录", provider: undefined, providerName: undefined, favoriteId: undefined }] } });
+  const ui = await uiHarness({ bootstrap: { ...boot, models: [plain], runs: [{ ...run, model: undefined, modelName: "旧记录", provider: undefined, providerName: undefined, favoriteId: undefined, source: undefined }] } });
   await ready(ui, "candy");
   assert.equal(ui.descendants(ui.elements.get("model-list"), "strong")[0].textContent, "plain-model");
   assert.equal(ui.descendants(ui.elements.get("candy-results"), "h3")[0]?.textContent, "旧记录");
@@ -193,11 +197,11 @@ test("model selections made while adding an earlier selection are kept in the dr
   } }); await ready(ui); await ui.elements.get("favorite-add").fire("click");
   const choices = ui.descendants(drawer(ui), "input").filter(item => item.type === "checkbox");
   choices[0].checked = true; await choices[0].fire("change");
-  const adding = label(ui, drawer(ui), "添加模型 · 1").fire("click");
+  const adding = label(ui, footer(ui), "添加模型 · 1").fire("click");
   choices[1].checked = true; await choices[1].fire("change");
   waiting.resolve({ favorite }); await adding;
   assert.equal(ui.elements.get("favorite-drawer").hidden, false, "Do not discard selections that were not in the submitted snapshot");
   assert.equal(ui.descendants(drawer(ui), "input").find(item => item.getAttribute("aria-label")?.startsWith("Two"))?.checked, true);
-  await label(ui, drawer(ui), "添加模型 · 1").fire("click");
+  await label(ui, footer(ui), "添加模型 · 1").fire("click");
   assert.equal(calls, 2); assert.equal(ui.elements.get("favorite-drawer").hidden, true);
 });

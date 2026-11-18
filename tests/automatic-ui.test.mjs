@@ -16,6 +16,7 @@ const boot = { models: [model], runs: [run], defaultPrompt: "animate", favorites
 const find = (ui, root, text) => ui.descendants(root).find(e => e.textContent === text);
 const buttons = (ui, root) => ui.descendants(root, "button");
 const drawer = ui => ui.elements.get("drawer-content");
+const footer = ui => ui.elements.get("drawer-footer");
 const field = (ui, label) => ui.descendants(drawer(ui), "label").find(row => row.children[0]?.textContent === label)?.children[1];
 async function open(ui) { await waitFor(() => ui.descendants(ui.elements.get("model-list"), "input").length); await ui.elements.get("favorites-tab").fire("click"); }
 
@@ -132,7 +133,7 @@ test("one model plan editor saves only that model and rejects an interval above 
   assert.ok(find(ui, drawer(ui), "Supplier")); assert.equal(field(ui, "目标模型"), undefined);
   field(ui, "执行方式").value = "interval"; await field(ui, "执行方式").fire("change");
   field(ui, "间隔 · 分钟").value = "20"; await field(ui, "间隔 · 分钟").fire("input");
-  let save = buttons(ui, drawer(ui)).find(e => e.textContent === "保存计划");
+  const save = buttons(ui, footer(ui)).find(e => e.textContent === "保存计划");
   assert.equal(save.disabled, true); assert.ok(ui.descendants(drawer(ui)).some(e => /27.*24/.test(e.textContent)));
   field(ui, "间隔 · 分钟").value = "30"; await field(ui, "间隔 · 分钟").fire("input"); assert.equal(save.disabled, false);
   await save.fire("click"); const sent = calls.find(([path]) => path === "api/schedules/save")[1];
@@ -185,7 +186,8 @@ test("automatic concurrency is directly visible and saves zero without a disclos
   const limit = field(ui, "自动请求并行数");
   assert.ok(limit.getClientRects().length > 0, "The concurrency input must be visible as soon as management opens");
   limit.value = "0";
-  await buttons(ui, drawer(ui)).find(control => control.textContent === "保存并行数").fire("click");
+  await limit.fire("input");
+  await buttons(ui, footer(ui)).find(control => control.textContent === "保存设置").fire("click");
   assert.deepEqual(calls.find(([path]) => path === "api/schedules/settings")?.[1], { concurrency: 0 });
 });
 

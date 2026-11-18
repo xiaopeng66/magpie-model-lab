@@ -1,13 +1,19 @@
+import { batchKey, historyBatches, historyTime, recentTestBatches } from '../lib/history-groups.mjs';
+import { renderDailyHistory } from './history-preview.mjs';
+
 (() => {
   "use strict";
   const $ = (id) => document.getElementById(id);
   const token = document.querySelector('meta[name="pelican-token"]')?.content || "";
   const models = new Map(), selected = new Map(), selectedAccounts = new Map(), runs = new Map(), cards = new Map();
   const removed = new Set(), deleting = new Set(), historyItems = new Map(), pendingRenders = new Set(), previewCards = new WeakMap();
+  const historyDays = new Map(), runningItems = new Map();
+  let historyGroups = new Map(), historyKeys = new Map(), dailyPreview = null, historyTimeZone;
+  let historyPosition = null, historyScrollFrame = null;
   const views = {
-    current: { batchId: "", ids: [], results: "results", scroll: "preview-scroll", note: "batch-note", empty: "empty-state", cancel: "cancel-all" },
-    fingerprint: { batchId: "", ids: [], results: "fingerprint-results", scroll: "fingerprint-scroll", note: "fingerprint-note", empty: "fingerprint-empty", cancel: "fingerprint-cancel" },
-    candy: { batchId: "", ids: [], results: "candy-results", scroll: "candy-scroll", note: "candy-note", empty: "candy-empty", cancel: "candy-cancel" },
+    current: { batchId: "", ids: [], recentIds: [], results: "results", scroll: "preview-scroll", note: "batch-note", empty: "empty-state", cancel: "cancel-all" },
+    fingerprint: { batchId: "", ids: [], recentIds: [], results: "fingerprint-results", scroll: "fingerprint-scroll", note: "fingerprint-note", empty: "fingerprint-empty", cancel: "fingerprint-cancel" },
+    candy: { batchId: "", ids: [], recentIds: [], results: "candy-results", scroll: "candy-scroll", note: "candy-note", empty: "candy-empty", cancel: "candy-cancel" },
     favorites: { batchId: "", ids: [], results: "favorite-results", scroll: "favorite-scroll", empty: "favorite-empty" },
     history: { batchId: "", ids: [], results: "history-results", scroll: "history-preview-scroll", note: "history-batch-note", empty: "history-empty", cancel: "history-cancel" },
   };
@@ -16,13 +22,12 @@
   let defaults = "", activeView = "current", batchCleanup = false, openDataDir = false, cleaning = false, streaming = false, reconnecting = false, renderFrame = null;
   let executionView = "current", creating = false, addingFavorites = false, fingerprintAvailable = false, batchCancel = false, batchExport = false, bankUpdating = false, cachedAccounts = [], accountsLoaded = false, accountsLoading = false;
   const concurrencyDrafts = { current: "2", fingerprint: "3", candy: "3" }, exporting = new Set();
-  const batchKey = run => run.roundId || run.batchId || run.id;
   const tokenLabel = value => value === 0 ? "不设输出上限" : `${value ?? 64000} Token`;
   const concurrencyLabel = run => run.concurrency === 0 ? "不设并行上限" : `并行 ${run.concurrency ?? (run.kind === "fingerprint" || run.kind === "candy" ? 3 : 2)}`;
   const kindLabel = kind => ({ pelican: "动画", fingerprint: "指纹", candy: "糖果" })[kind || "pelican"];
   let favoritesAvailable = false, candyAvailable = false;
   let initialized = false, bootstrapping = false;
-  let exportVersion = 0, exportedBatch = "", exportOpener = null;
+  let exportedBatch = "", exportVersion = 0, exportOpener = null, confirmPending = null;
   let connectionNotice = "";
   const query = new URLSearchParams(location.search);
   let dark = query.get("theme") ? query.get("theme") === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
@@ -56,6 +61,7 @@
   const error = (text) => { $("form-error").textContent = text; $("form-error").hidden = !text; if (text) { if ($("setup-sidebar").hidden) notice(text); else $("form-error").focus(); } };
   const seconds = (value) => value === null || value === undefined ? "—" : (value / 1000).toFixed(1) + " s";
   const when = (value) => new Date(value).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+  const batchWhen = value => new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
   const compactCount = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
 
   function makeUsage() {
@@ -64,7 +70,7 @@
       const item = node("span", "usage-metric"), value = node("span", "usage-value", "—");
       item.append(node("span", "usage-label", label), value); strip.append(item); strip.fields[key] = { item, value, label };
     }
-    return strip;
+    strip.unit = node("span", "usage-unit", "Token"); strip.append(strip.unit); return strip;
   }
   function renderUsage(strip, run = {}) {
     const tokens = run.tokens || { reasoning: run.usage?.completion_tokens_details?.reasoning_tokens ?? run.usage?.output_tokens_details?.reasoning_tokens ?? run.usage?.reasoning_tokens,
@@ -75,10 +81,11 @@
       const count = reported ? tokens[key] : chars, unit = reported ? "Token" : "字";
       const known = reported || Number.isFinite(count) && count > 0;
       const compact = known ? count >= 1000 ? compactCount.format(count) : count.toLocaleString() : "—";
-      text(value, known ? `${partial ? "≥" : ""}${compact} ${unit}` : "—");
+      text(value, known ? `${partial ? "≥" : ""}${compact}${reported ? "" : " 字"}` : "—");
       item.title = known ? `${label}：${count.toLocaleString()} ${unit}${partial ? "（仅汇总已返回用量的采样）" : ""}${reported ? key === "output" ? "；接口原值，可能包含思考 Token" : "" : "；接口未提供 Token，显示已收到的文本字符数"}` : `${label}：尚无用量数据`;
       item.setAttribute("aria-label", item.title);
     }
+    strip.unit.hidden = ![tokens.reasoning, tokens.output].some(value => Number.isSafeInteger(value) && value >= 0);
   }
   function makeStats(card, firstLabel) {
     const stats = node("div", "card-stats"); card.metrics = [];
@@ -146,20 +153,12 @@
         error(""); renderSelected();
       });
       input.setAttribute("aria-label", `${modelLabel(model, true)} (${model.id})`); label.title = model.id;
-      const labelText = node("span", "model-text"); labelText.append(node("strong", "", modelLabel(model, false)));
-      if (!provider) labelText.append(node("small", "", model.providerName || model.provider));
+      const labelText = node("span", "model-text"); labelText.append(node("strong", "model-name", modelLabel(model, false)));
+      if (!provider) labelText.append(node("small", "model-provider", model.providerName || model.provider));
       label.append(input, labelText); container.append(label);
     }
     if (!matches.length) container.append(node("p", "help model-count", !models.size ? "模型列表暂不可用，请刷新" : "没有匹配的模型"));
     text($("model-visible-count"), `${matches.length} 个可选`);
-    if (!$("model-name-panel").hidden) renderFullNames(matches);
-  }
-
-  function renderFullNames(list) {
-    const container = $("model-names-list"); container.replaceChildren();
-    for (const model of list) {
-      const item = node("p", "model-full-name", `${modelLabel(model, true)}\n${model.id}`); item.setAttribute("tabindex", "0"); container.append(item);
-    }
   }
 
   function renderSelected() {
@@ -215,63 +214,81 @@
   let modelsInitialized = false;
 
   function renderHistory() {
-    const all = [...runs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const all = historyBatches(runs.values(), historyTimeZone);
+    historyGroups = new Map(all.map(group => [group.id, group]));
+    historyKeys = new Map(all.flatMap(group => group.runs.map(run => [run.id, group.id])));
     const filter = $("history-filter").value;
     const sourceFilter = $("history-source").value;
-    const totalBatches = new Set(all.map(batchKey));
-    const batches = new Map();
-    for (const run of all) {
-      const id = batchKey(run);
-      if (!batches.has(id)) batches.set(id, []);
-      batches.get(id).push(run);
-    }
-    for (const [id, members] of batches) if ((filter && !members.some(run => (run.kind || "pelican") === filter)) ||
-      (sourceFilter && !members.some(run => sourceFilter === "favorites" ? run.favoriteId && run.source !== "automatic" : sourceFilter === "automatic" ? run.source === "automatic" : !run.favoriteId && run.source !== "automatic"))) batches.delete(id);
-    if (views.history.batchId && !batches.has(views.history.batchId)) {
-      for (const id of views.history.ids) removeCard(id, "history");
-      views.history.ids = []; views.history.batchId = ""; refreshView("history");
+    const batches = new Map(all.filter(group => (!filter || group.runs.some(run => (run.kind || "pelican") === filter)) && (!sourceFilter || group.source === sourceFilter)).map(group => [group.id, group]));
+    let selectedBatch = views.history.batchId;
+    if (selectedBatch && !batches.has(selectedBatch)) {
+      selectedBatch = views.history.ids.map(id => historyKeys.get(id)).find(id => batches.has(id));
+      if (!selectedBatch) clearHistorySelection(false);
     }
     if (exportedBatch && !batches.has(exportedBatch)) closeExport();
-    text($("history-count"), `${totalBatches.size} 批`);
+    text($("history-count"), `${all.length} 批`);
     const container = $("history-list");
     for (const [id, item] of historyItems) if (!batches.has(id)) { item.root.remove(); historyItems.delete(id); }
-    if (batches.size && container.children[0]?.className === "help") container.children[0].remove();
-    let index = 0;
-    for (const [batchId, members] of batches) {
+    if (batches.size) container.querySelector('.history-list-empty')?.remove();
+    const dayCounts = new Map();
+    for (const group of batches.values()) dayCounts.set(group.date, (dayCounts.get(group.date) || 0) + 1);
+    for (const [date, day] of historyDays) if (!dayCounts.has(date)) { day.root.remove(); historyDays.delete(date); }
+    const dayIndices = new Map(); let dayIndex = 0;
+    for (const [batchId, group] of batches) {
+      const members = group.runs, daily = group.source === "automatic";
+      let day = historyDays.get(group.date);
+      if (!day) { const root = node('section', 'history-day'), heading = node('h3', 'history-day-heading'), list = node('div', 'history-day-items'); root.append(heading, list); day = { root, heading, list }; historyDays.set(group.date, day); }
+      if (!dayIndices.has(group.date)) {
+        text(day.heading, `${group.date} · ${dayCounts.get(group.date)} 批`);
+        if (container.children[dayIndex] !== day.root) container.insertBefore(day.root, container.children[dayIndex] || null);
+        dayIndices.set(group.date, 0); dayIndex++;
+      }
       const completed = members.filter(run => run.status === "completed").length;
       const unfinished = members.filter(active).length;
       const status = unfinished ? (members.some(run => run.status === "running") ? "running" : "queued") : completed === members.length ? "completed" : "error";
       let item = historyItems.get(batchId);
       if (!item) {
         const root = node("div", "history-item"); root.dataset.batchId = batchId;
-        const row = button("", () => { showBatch(batchId, "history"); setView("history"); }, "history-row");
-        const name = node("span", "history-name"), badge = node("span", "badge"), time = node("time"); row.append(name, badge, time);
+        const row = button("", () => { if (views.history.batchId === batchId) clearHistorySelection(); else { if (activeView !== 'history') setView('history'); showBatch(batchId, "history"); } }, "history-row");
+        const name = node("span", "history-name"), subtitle = node("span", "history-subtitle"), badge = node("span", "badge"), time = node("time"); row.append(name, subtitle, badge, time);
         const remove = button("删除", () => deleteBatch(batchId), "history-delete");
-        const exportButton = iconButton("export", `导出 ${batchId}`, () => exportHistory(batchId));
+        const exportButton = iconButton("export", `查看 / 导出批次 JSON ${batchId}`, () => exportHistory(batchId));
         const actions = node("div", "history-actions"); actions.append(exportButton, remove); root.append(row, actions);
-        item = { root, row, name, badge, time, remove, exportButton }; historyItems.set(batchId, item);
+        item = { root, row, name, subtitle, badge, time, remove, exportButton }; historyItems.set(batchId, item);
       }
       const { root, row, name, badge, time, remove } = item;
-      root.dataset.selected = String(views.history.batchId === batchId);
+      root.dataset.selected = String(selectedBatch === batchId);
       const label = unfinished ? `${states[status]} · ${completed}/${members.length}` : `${completed}/${members.length} 完成`;
       row.title = members.map(run => `${run.modelName || run.model}：${states[run.status]}`).join("\n");
-      row.setAttribute("aria-label", `${when(members[0].createdAt)}，${members.length} 个模型，${label}`);
-      row.setAttribute("aria-pressed", String(views.history.batchId === batchId));
+      const modelCount = group.modelIds.length;
+      const batchTitle = daily ? `${group.date} ${kindLabel(group.kind)}每日批次` : `${when(members[0].createdAt)} ${kindLabel(members[0].kind)}批次`;
+      row.setAttribute("aria-label", `${batchTitle}，${modelCount} 个模型，${members.length} 份结果，${label}`);
+      row.setAttribute("aria-pressed", String(selectedBatch === batchId));
+      row.setAttribute('aria-expanded', String(selectedBatch === batchId)); row.setAttribute('aria-controls', 'history-detail');
       const kinds = [...new Set(members.map(run => run.kind || "pelican"))].map(kindLabel).join(" / ");
-      const source = members[0].source === "automatic" ? `自动 · ${[...new Set(members.flatMap(run => run.plans?.map(plan => plan.name) || []))].join("、")} · ` : members[0].favoriteId ? "收藏 · " : "";
-      text(name, `${source}${kinds} · ${new Set(members.map(run => run.model)).size} 个模型`); badge.className = `badge ${status}`; text(badge, label);
-      text(time, when(members[0].createdAt)); time.dateTime = members[0].createdAt;
+      const source = members[0].source === "automatic" ? "自动测试" : members[0].favoriteId ? "收藏记录" : "手动测试";
+      const modelNames = [...new Set(members.map(run => modelLabel({ id: run.model, name: run.modelName, provider: run.provider, providerName: run.providerName }, false)))];
+      text(name, modelNames.join("、")); text(item.subtitle, `${source} · ${kinds}${daily ? '每日批次' : ''} · ${modelCount} 个模型`); badge.className = `badge ${status}`; text(badge, label);
+      const timeRange = daily ? [group.times[0], group.times.at(-1)].slice(0, group.times.length === 1 ? 1 : 2).map(at => historyTime(at, historyTimeZone)).join('–') : when(group.createdAt);
+      text(time, timeRange); time.dateTime = daily ? group.date : group.createdAt;
       text(remove, deleting.has(batchId) ? "删除中…" : "删除");
-      remove.setAttribute("aria-label", `删除 ${when(members[0].createdAt)} 的批次及 ${members.length} 份结果文件`);
+      remove.setAttribute("aria-label", `删除 ${batchTitle}及 ${members.length} 份结果文件`);
       remove.disabled = !batchCleanup || unfinished > 0 || deleting.has(batchId) || cleaning;
       remove.title = !batchCleanup ? "重新开启插件后可删除单批记录" : unfinished ? "本批任务结束后可删除" : "删除本批记录和生成文件";
       item.exportButton.hidden = !batchExport; item.exportButton.disabled = unfinished > 0 || exporting.has(batchId) || deleting.has(batchId) || cleaning;
       item.exportButton.setAttribute("aria-busy", String(exporting.has(batchId)));
-      item.exportButton.setAttribute("aria-label", `导出 ${when(members[0].createdAt)} 的批次 JSON`);
-      if (container.children[index] !== root) container.insertBefore(root, container.children[index] || null);
-      index++;
+      item.exportButton.setAttribute("aria-label", `导出 ${batchTitle}：${modelNames.join('、')} JSON`); item.exportButton.title = item.exportButton.getAttribute('aria-label');
+      const index = dayIndices.get(group.date); if (day.list.children[index] !== root) day.list.insertBefore(root, day.list.children[index] || null); dayIndices.set(group.date, index + 1);
     }
-    if (!batches.size && !container.children.length) container.append(node("p", "help", filter || sourceFilter ? "暂无匹配记录" : "暂无记录"));
+    if (!batches.size) {
+      const placeholder = container.querySelector('.history-list-empty') || node('p', 'help history-list-empty');
+      text(placeholder, filter || sourceFilter ? '暂无匹配记录' : '暂无记录');
+      if (!placeholder.isConnected) container.append(placeholder);
+    }
+    if (selectedBatch) showBatch(selectedBatch, 'history', false);
+    if (dailyPreview) dailyPreview.update(historyGroups.get(views.history.batchId));
+    renderRunningBatches();
+    for (const name of ['current', 'fingerprint', 'candy']) renderRecentBatches(name);
   }
 
   function historyNotice(text, failed = false) { $("history-status").textContent = text; $("history-status").hidden = !text; $("history-status").dataset.error = String(failed); }
@@ -284,37 +301,57 @@
   }
 
   function closeExport(focus = false) {
-    if (focus) (exportOpener && !exportOpener.disabled && historyItems.get(exportedBatch)?.exportButton === exportOpener ? exportOpener : $("history-tab")).focus();
+    const returnFocus = exportOpener?.isConnected && !exportOpener.disabled ? exportOpener : $("history-tab");
     exportVersion++; exportedBatch = ""; exportOpener = null;
+    if ($("export-panel").open) $("export-panel").close();
     $("export-panel").hidden = true; $("export-json").value = ""; text($("export-summary"), "");
-    $("export-copy").disabled = true; $("export-toggle").disabled = true; toggleExport(false); exportStatus("");
+    $("export-copy").disabled = true; $("export-toggle").disabled = true; $("export-download").disabled = true; toggleExport(false); exportStatus("");
+    if (focus) returnFocus.focus({ preventScroll: true });
   }
 
   async function exportHistory(batchId) {
     if (!batchExport) return;
-    const item = historyItems.get(batchId); if (!item || item.exportButton.disabled) return;
+    const item = historyItems.get(batchId), group = historyGroups.get(batchId); if (!group || !item || item.exportButton.disabled) return;
     closeExport(); const version = exportVersion; exportedBatch = batchId; exportOpener = item.exportButton;
-    exporting.add(batchId); renderHistory(); historyNotice(""); setView("history");
-    const members = [...runs.values()].filter(run => batchKey(run) === batchId);
-    text($("export-summary"), `${[...new Set(members.map(run => kindLabel(run.kind)))].join(" / ")} · ${members.length} 份结果 · ${when(members[0]?.createdAt)}`);
-    $("export-panel").hidden = false; exportStatus("正在准备导出…");
+    exporting.add(batchId); renderHistory();
+    const members = group.runs;
+    text($("export-summary"), `${[...new Set(members.map(run => kindLabel(run.kind)))].join(" / ")} · ${members.length} 份结果 · ${group.date}`);
+    $("export-panel").hidden = false; $("export-panel").showModal(); exportStatus("正在准备导出…");
     try {
-      const body = await api(`api/batches/${batchId}/export`);
+      const body = group.source === "automatic" ? await api("api/batches/export", { method: "POST", body: JSON.stringify({ runIds: members.map(run => run.id) }) })
+        : await api(`api/batches/${batchId}/export`);
       if (version !== exportVersion) return;
       $("export-json").value = JSON.stringify(body, null, 2); exportStatus("");
-      $("export-copy").disabled = false; $("export-toggle").disabled = false;
-      if (activeView === "history") $("export-copy").focus();
+      $("export-copy").disabled = $("export-toggle").disabled = $("export-download").disabled = false;
+      if (document.activeElement === $("export-close")) $("export-copy").focus({ preventScroll: true });
     } catch (err) { if (version === exportVersion) exportStatus(err.message, true); }
     finally { exporting.delete(batchId); renderHistory(); }
   }
 
+  function confirmAction(title, message, label) {
+    if (confirmPending) return Promise.resolve(false);
+    const dialog = $("confirm-dialog"), opener = document.activeElement;
+    text($("confirm-title"), title); text($("confirm-message"), message); text($("confirm-accept"), label);
+    dialog.showModal(); $("confirm-cancel").focus({ preventScroll: true });
+    return new Promise(resolve => { confirmPending = value => {
+      confirmPending = null; dialog.close();
+      if (opener?.isConnected && !opener.disabled) opener.focus({ preventScroll: true });
+      resolve(value);
+    }; });
+  }
+  $("confirm-cancel").addEventListener("click", () => confirmPending?.(false));
+  $("confirm-accept").addEventListener("click", () => confirmPending?.(true));
+  $("confirm-dialog").addEventListener("cancel", event => { event.preventDefault(); confirmPending?.(false); });
+
   async function deleteBatch(batchId) {
     if (!batchCleanup || cleaning || deleting.has(batchId)) return;
-    const members = [...runs.values()].filter(run => batchKey(run) === batchId);
-    if (!members.length || members.some(active)) return;
+    const group = historyGroups.get(batchId);
+    if (!group || group.runs.some(active)) return;
+    const request = group.source === "automatic" ? { mode: "daily", runIds: group.runs.map(run => run.id) } : { mode: "batch", batchId };
+    if (!await confirmAction("删除批次", `将删除这个批次的 ${group.runs.length} 份结果及生成文件。`, "删除批次")) return;
     deleting.add(batchId); renderHistory(); cleanupControls(); historyNotice("正在删除本批记录和文件…");
     try {
-      const outcome = await api("api/runs/cleanup", { method: "POST", body: JSON.stringify({ mode: "batch", batchId }) });
+      const outcome = await api("api/runs/cleanup", { method: "POST", body: JSON.stringify(request) });
       removeRuns(outcome.removed);
       historyNotice(outcome.errors.length ? `已删除 ${outcome.removed.length} 份，${outcome.errors.length} 份删除失败：${outcome.errors[0].error}` : `已删除本批 ${outcome.removed.length} 份记录及文件`, outcome.errors.length > 0);
     } catch (err) { historyNotice(err.message, true); }
@@ -331,6 +368,11 @@
       $(`${view}-tab`).setAttribute("aria-selected", String(view === name));
       $(`${view}-tab`).setAttribute("tabindex", view === name ? "0" : "-1");
     }
+    const tab = $(`${name}-tab`), tabs = tab.parentElement;
+    if (tabs.scrollWidth > tabs.clientWidth) {
+      const item = tab.getBoundingClientRect(), bounds = tabs.getBoundingClientRect();
+      tabs.scrollLeft += Math.max(0, item.right - bounds.right + 3) + Math.min(0, item.left - bounds.left - 3);
+    }
     if (!["history", "favorites"].includes(name)) {
       const changed = executionView !== name;
       if (changed) { concurrencyDrafts[executionView] = $("concurrency").value; $("concurrency").value = concurrencyDrafts[name]; $("concurrency").removeAttribute("aria-invalid"); }
@@ -338,8 +380,10 @@
     }
     $("setup-sidebar").hidden = ["history", "favorites"].includes(name); $("workspace").dataset.wide = String($("setup-sidebar").hidden);
     if (name !== "favorites") favoritesUI.closeDrawer(); else { favoritesUI.render(); favoritesUI.refresh(); }
+    if (name !== "history" && exportedBatch) closeExport();
     updateSettings();
     for (const card of [...cards.values()]) { renderCard(card.id, card.view); if (card.view === name) fitPreview(card); }
+    renderRunningBatches();
     if (initialized && !bootstrapping) rememberView({ view: name, mode: executionView });
   }
 
@@ -360,14 +404,71 @@
     if (name === "favorites") return;
     const view = views[name];
     $(view.empty).hidden = view.ids.length > 0;
-    $(view.note).textContent = view.ids.length ? `${view.ids.length} 个模型` : "";
+    $(view.note).textContent = view.ids.length ? `${new Set(view.ids.map(id => runs.get(id)?.model)).size} 个模型 · ${view.ids.length} 份结果` : "";
+    if (view.recentIds && view.ids.length) $(view.note).textContent = `${batchWhen(runs.get(view.ids[0]).createdAt)} · ${$(view.note).textContent}`;
     $(view.cancel).hidden = !view.ids.some(id => active(runs.get(id) || {}));
-    if (name === "history") $("history-detail").hidden = !view.ids.length;
+    if (name === "history") {
+      $("history-detail").hidden = !view.ids.length;
+      const group = historyGroups.get(view.batchId); text($('history-preview-title'), group?.source === 'automatic' ? `${kindLabel(group.kind)}每日预览` : '批次预览');
+    }
+  }
+
+  function renderRunningBatches() {
+    const groups = [...historyGroups.values()].filter(group => group.source !== 'automatic' && group.runs.some(active)), list = $('running-batch-list');
+    $('running-batches').hidden = !groups.length;
+    for (const [id, entry] of runningItems) if (!groups.some(group => group.id === id)) {
+      if (entry.root.contains(document.activeElement)) $(`${activeView}-tab`).focus({ preventScroll: true });
+      entry.root.remove(); runningItems.delete(id);
+    }
+    for (const [index, group] of groups.entries()) {
+      const target = group.runs[0].kind === 'pelican' || !group.runs[0].kind ? 'current' : group.runs[0].kind;
+      let entry = runningItems.get(group.id);
+      if (!entry) {
+        const root = button('', () => { showBatch(group.id, target); setView(target); }, 'running-batch'), dot = node('span', 'running-batch-dot'), name = node('span', 'running-batch-name'), label = node('span', 'running-batch-kind'), progress = node('span', 'running-batch-progress');
+        dot.setAttribute('aria-hidden', 'true');
+        root.append(dot, name, label, progress); entry = { root, name, label, progress }; runningItems.set(group.id, entry);
+      }
+      const names = [...new Set(group.runs.map(run => modelLabel({ id: run.model, name: run.modelName, provider: run.provider, providerName: run.providerName }, false)))].join('、');
+      const done = group.runs.filter(run => !active(run)).length, state = group.runs.some(run => run.status === 'running') ? 'running' : 'queued';
+      text(entry.name, names); text(entry.label, kindLabel(group.runs[0].kind)); text(entry.progress, `${done}/${group.runs.length}`);
+      entry.root.dataset.state = state; entry.root.dataset.batchId = group.id;
+      entry.root.title = `${batchWhen(group.createdAt)} · ${states[state]}\n${group.runs.map(run => `${run.modelName || run.model}：${states[run.status]}`).join('\n')}\n进度计入已结束的任务，包括失败或取消。`;
+      entry.root.setAttribute('aria-label', `查看${kindLabel(group.runs[0].kind)}测试：${names}，${batchWhen(group.createdAt)}，${states[state]}，${done}/${group.runs.length} 已结束`);
+      entry.root.setAttribute('aria-pressed', String(activeView === target && views[target].batchId === group.id));
+      if (list.children[index] !== entry.root) list.insertBefore(entry.root, list.children[index] || null);
+    }
+  }
+
+  function renderRecentBatches(name) {
+    const view = views[name], container = $(`${name}-recent`), items = view.recentItems ||= new Map();
+    const preferredModelOrder = [...new Set(view.ids.map(id => runs.get(id)?.model).filter(Boolean))];
+    for (const model of models.keys()) if (!preferredModelOrder.includes(model)) preferredModelOrder.push(model);
+    const groups = recentTestBatches([...historyGroups.values()], name === 'current' ? 'pelican' : name, view.batchId, preferredModelOrder);
+    const ids = groups.flatMap(group => group.runs.map(run => run.id));
+    for (const id of view.recentIds) if (!ids.includes(id) && !view.ids.includes(id)) removeCard(id, name);
+    view.recentIds = ids; container.hidden = !groups.length;
+    for (const [id, entry] of items) if (!groups.some(group => group.id === id)) { entry.root.remove(); items.delete(id); }
+    for (const [index, group] of groups.entries()) {
+      let entry = items.get(group.id);
+      if (!entry) {
+        const root = node('section', 'recent-batch'), heading = node('div', 'recent-batch-heading'), title = node('h3'), meta = node('span', 'help'), grid = node('div', 'results-grid');
+        root.dataset.batchId = group.id; heading.append(title, meta); root.append(heading, grid);
+        entry = { root, title, meta, grid }; items.set(group.id, entry);
+      }
+      text(entry.title, `历史批次 ${index + 1}`);
+      text(entry.meta, `${batchWhen(group.createdAt)} · ${group.modelIds.length} 个模型 · ${group.runs.length} 份结果`);
+      entry.root.setAttribute('aria-label', `${entry.title.textContent}，${entry.meta.textContent}`);
+      for (const [cardIndex, run] of group.runs.entries()) {
+        renderCard(run.id, name); const root = cards.get(`${name}:${run.id}`)?.root;
+        if (root && entry.grid.children[cardIndex] !== root) entry.grid.insertBefore(root, entry.grid.children[cardIndex] || null);
+      }
+      if (container.children[index] !== entry.root) container.insertBefore(entry.root, container.children[index] || null);
+    }
   }
 
   function renderShown(id) {
     pendingRenders.delete(id);
-    for (const [name, view] of Object.entries(views)) if (view.ids.includes(id)) renderCard(id, name);
+    for (const [name, view] of Object.entries(views)) if (view.ids.includes(id) || view.recentIds?.includes(id)) renderCard(id, name);
     favoritesUI.progress(id);
   }
 
@@ -387,16 +488,17 @@
     if (prior.status && !active(prior) && ["queued", "running"].includes(value.status)) return;
     const changed = Object.hasOwn(value, "status") && value.status !== prior.status;
     if (value.kind === "fingerprint" && Number.isFinite(value.revision) && Number.isFinite(prior.revision) && value.revision < prior.revision) return;
-    const historyChanged = !prior.id || ["status", "batchId", "createdAt", "modelName", "kind"].some(key => Object.hasOwn(value, key) && value[key] !== prior[key]);
+    const historyChanged = !prior.id || ["status", "batchId", "roundId", "scheduledAt", "createdAt", "model", "modelName", "source", "kind"].some(key => Object.hasOwn(value, key) && value[key] !== prior[key]);
     Object.assign(prior, value);
     if (changed && !active(prior)) prior.loaded = false;
     runs.set(value.id, prior);
     for (const [name, view] of Object.entries(views)) {
-      if (batchKey(prior) === view.batchId && (name === "history" || name === "favorites" || (prior.kind || "pelican") === (name === "current" ? "pelican" : name)) && !view.ids.includes(value.id)) view.ids.push(value.id);
+      if ((name === 'history' ? historyKeys.get(prior.id) : batchKey(prior)) === view.batchId && (name === "history" || name === "favorites" || (prior.kind || "pelican") === (name === "current" ? "pelican" : name)) && !view.ids.includes(value.id)) view.ids.push(value.id);
       refreshView(name);
     }
     renderShown(value.id);
     if (historyChanged && updateHistory) renderHistory();
+    else renderRunningBatches();
     if (prior.favoriteId) favoritesUI.render();
   }
 
@@ -406,11 +508,12 @@
   }
 
   function removeRuns(ids) {
-    if (exportedBatch && ids.some(id => { const run = runs.get(id); return run && batchKey(run) === exportedBatch; })) closeExport();
+    if (exportedBatch && ids.some(id => historyKeys.get(id) === exportedBatch)) closeExport();
     for (const id of ids) { removed.add(id); runs.delete(id); pendingRenders.delete(id); }
     for (const [name, view] of Object.entries(views)) {
       for (const id of ids) removeCard(id, name);
       view.ids = view.ids.filter(id => runs.has(id));
+      if (name === 'history' && !view.ids.length) { clearHistorySelection(false); continue; }
       if (!view.ids.length) view.batchId = "";
       refreshView(name);
     }
@@ -418,15 +521,78 @@
     if (ids.length) favoritesUI.refresh();
   }
 
-  function showBatch(batchId, name = "current") {
+  function clearHistorySelection(updateList = true) {
+    const view = views.history, position = historyPosition;
+    historyPosition = null; cancelAnimationFrame(historyScrollFrame); historyScrollFrame = null;
+    for (const id of view.ids) removeCard(id, 'history');
+    view.ids = []; view.batchId = ''; view.visibleIds = null; dailyPreview = null;
+    $(view.results).replaceChildren(); refreshView('history');
+    if (updateList) renderHistory();
+    if (position) historyScrollFrame = requestAnimationFrame(() => {
+      historyScrollFrame = null;
+      if (view.ids.length) return;
+      $('history-scroll').scrollTop = position.list;
+      if (activeView === 'history') window.scrollTo({ top: position.page, behavior: 'instant' });
+    });
+  }
+
+  function revealHistoryRow(batchId) {
+    cancelAnimationFrame(historyScrollFrame);
+    historyScrollFrame = requestAnimationFrame(() => {
+      historyScrollFrame = null;
+      if (activeView !== 'history' || views.history.batchId !== batchId) return;
+      const list = $('history-scroll'), row = historyItems.get(batchId)?.root;
+      if (!row) return;
+      const bounds = list.getBoundingClientRect(), selectedBounds = row.getBoundingClientRect();
+      const bottom = bounds.top + list.clientHeight - 6, top = bounds.top + 2;
+      if (selectedBounds.bottom > bottom) list.scrollTop += selectedBounds.bottom - bottom;
+      else if (selectedBounds.top < top) list.scrollTop += selectedBounds.top - top;
+      const detailTop = $('history-detail').getBoundingClientRect().top;
+      if (matchMedia('(max-width: 720px)').matches && (detailTop > innerHeight - 180 || detailTop < 0 || row.getBoundingClientRect().top < 0)) {
+        window.scrollBy({ top: list.getBoundingClientRect().top - 16, behavior: 'instant' });
+      }
+    });
+  }
+
+  function mountHistoryRuns(ids, targets) {
+    const view = views.history;
+    for (const id of view.visibleIds || []) if (!ids.includes(id)) removeCard(id, 'history');
+    view.visibleIds = ids;
+    for (const id of ids) {
+      renderCard(id, 'history'); const root = cards.get(`history:${id}`)?.root, target = targets.get(id);
+      if (root && target && !target.contains(root)) target.append(root);
+    }
+  }
+
+  function showBatch(batchId, name = "current", updateList = true) {
     const view = views[name];
-    if (view.batchId === batchId) return;
-    for (const id of view.ids) removeCard(id, name);
-    $(view.results).replaceChildren(); $(view.scroll).scrollTop = 0; view.batchId = batchId;
-    view.ids = [...runs.values()].filter(r => batchKey(r) === batchId && (name === "history" || (r.kind || "pelican") === (name === "current" ? "pelican" : name))).sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map(r => r.id);
+    const group = name === 'history' ? historyGroups.get(batchId) : null;
+    const members = group?.runs || [...runs.values()].filter(r => batchKey(r) === batchId && (name === "history" || (r.kind || "pelican") === (name === "current" ? "pelican" : name))).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const ids = members.map(r => r.id);
+    const selectionChanged = view.batchId !== batchId;
+    if (!selectionChanged && view.ids.join('|') === ids.join('|')) return;
+    const results = $(view.results);
+    const daily = group?.source === 'automatic' && ['candy', 'pelican'].includes(group.kind);
+    if (name === 'history' && ids.length && !historyPosition) historyPosition = { list: $('history-scroll').scrollTop, page: window.scrollY };
+    const reset = selectionChanged || (name === 'history' && Boolean(dailyPreview) !== Boolean(daily));
+    for (const id of view.ids) if (reset || !ids.includes(id)) removeCard(id, name);
+    if (reset) { results.replaceChildren(); $(view.scroll).scrollTop = 0; view.visibleIds = null; }
+    view.batchId = batchId; view.ids = ids;
     refreshView(name);
-    for (const id of view.ids) renderCard(id, name);
-    if (name === "history") renderHistory();
+    if (name === 'history') {
+      results.dataset.layout = daily ? `daily-${group.kind}` : 'runs';
+      if (reset) dailyPreview = daily ? renderDailyHistory(group, results, { node, text, button, modelLabel, active, timeZone: historyTimeZone, mount: mountHistoryRuns }) : null;
+      if (!daily) for (const id of ids) renderCard(id, name);
+      if (updateList) renderHistory();
+      if (selectionChanged) revealHistoryRow(batchId);
+    } else {
+      for (const id of view.ids) {
+        renderCard(id, name); const root = cards.get(`${name}:${id}`)?.root;
+        if (root && !$(view.results).contains(root)) $(view.results).append(root);
+      }
+      renderRecentBatches(name);
+    }
+    renderRunningBatches();
   }
 
   function makeCard(id, view) {
@@ -506,6 +672,7 @@
     const run = runs.get(id); let card = cards.get(`${view}:${id}`);
     if (!card) {
       const root = node("article", "result-card candy-card"), header = node("div", "card-header"), names = node("div", "card-model");
+      root.dataset.runId = id;
       card = { id, view, root, kind: "candy", title: node("h3"), provider: node("p", "card-provider"), metrics: [] };
       names.append(card.title, card.provider); header.append(names); card.zone = node("div", "candy-zone"); card.answer = node("strong", "candy-answer"); card.verdict = node("span");
       card.placeholder = node("div", "preview-placeholder"); card.progress = node("div", "progress-line"); card.progress.setAttribute("aria-hidden", "true"); card.loadingLabel = node("strong");
@@ -656,7 +823,8 @@
   }
 
   function renderCard(id, view = "current") {
-    const run = runs.get(id); if (!run || !views[view].ids.includes(id)) return;
+    const run = runs.get(id); if (!run || !views[view].ids.includes(id) && !views[view].recentIds?.includes(id)) return;
+    if (view === 'history' && views.history.visibleIds && !views.history.visibleIds.includes(id)) return;
     if (run.kind === "fingerprint") { renderFingerprintCard(id, view); return; }
     if (run.kind === "candy") { renderCandyCard(id, view); return; }
     const card = cards.get(`${view}:${id}`) || makeCard(id, view);
@@ -772,7 +940,7 @@
     }
     return ids.map(id => cards.get(`favorites:${id}`)).filter(Boolean);
   }
-  const favoritesUI = createFavoritesUI({ $, node, text, button, iconButton, api, models, runs, modelLabel, when, active, makeUsage, renderUsage, mount: mountFavoriteRuns, updateRun, isVisible: () => activeView === "favorites", initialKind: query.get("automatic"), rememberView });
+  const favoritesUI = createFavoritesUI({ $, node, text, button, iconButton, api, models, runs, modelLabel, when, active, makeUsage, renderUsage, mount: mountFavoriteRuns, updateRun, confirmAction, isVisible: () => activeView === "favorites", initialKind: query.get("automatic"), rememberView });
   const tabViews = ["current", "fingerprint", "candy", "favorites", "history"];
   for (const [index, name] of tabViews.entries()) {
     const tab = $(`${name}-tab`);
@@ -789,10 +957,6 @@
     if (!selected.size) return;
     selected.clear(); selectedAccounts.clear(); error(""); renderSelected(); renderModels(); $("model-search").focus();
   });
-  $("model-names-toggle").addEventListener("click", () => {
-    const expanded = $("model-name-panel").hidden; $("model-name-panel").hidden = !expanded;
-    $("model-names-toggle").setAttribute("aria-expanded", String(expanded)); renderModels();
-  });
   $("history-filter").addEventListener("change", renderHistory);
   $("history-source").addEventListener("change", renderHistory);
   $("favorite-selected").addEventListener("click", async () => {
@@ -803,7 +967,14 @@
   });
   closeExport();
   $("export-close").addEventListener("click", () => closeExport(true));
+  $("export-panel").addEventListener("cancel", event => { event.preventDefault(); closeExport(true); });
   $("export-toggle").addEventListener("click", () => { if (!$("export-toggle").disabled) toggleExport($("export-preview").hidden); });
+  $("export-download").addEventListener("click", () => {
+    const group = historyGroups.get(exportedBatch); if (!group || !$("export-json").value) return;
+    const url = URL.createObjectURL(new Blob([$("export-json").value], { type: "application/json" })), link = node("a");
+    link.href = url; link.download = `magpie-model-lab-${group.date}-${group.kind || "batch"}.json`;
+    link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
   $("export-copy").addEventListener("click", async () => {
     const control = $("export-copy"); if (control.disabled || !$("export-json").value) return;
     const version = exportVersion; control.disabled = true;
@@ -964,6 +1135,7 @@
       $("cleanup-before").removeAttribute("aria-invalid");
       before = parsed.toISOString();
     }
+    if (!await confirmAction(mode === "all" ? "清除全部历史" : "按时间清理", mode === "all" ? "将删除全部已结束的记录及生成文件。" : `将删除 ${$("cleanup-before").value} 之前已结束的记录及生成文件。`, "确认清理")) return;
     cleaning = true; cleanupControls(); closeCalendar(); renderHistory(); $("cleanup-status").textContent = "正在清理记录和文件…"; $("cleanup-status").dataset.error = "false";
     try {
       const outcome = await api("api/runs/cleanup", { method: "POST", body: JSON.stringify({ mode, ...(before ? { before } : {}) }) });
@@ -1013,8 +1185,8 @@
   for (const view of Object.values(views).filter(view => view !== views.favorites)) $(view.cancel).addEventListener("click", async () => {
     const control = $(view.cancel); if (control.disabled) return; control.disabled = true;
     try {
-      if (batchCancel && view.batchId) { const body = await api(`api/batches/${view.batchId}/cancel`, { method: "POST" }); for (const run of body.runs) updateRun(run); }
-      else for (const id of view.ids) if (active(runs.get(id))) updateRun(await api(`api/runs/${id}/cancel`, { method: "POST" }));
+      if (batchCancel && view.batchId && !view.batchId.startsWith("daily:")) { const body = await api(`api/batches/${view.batchId}/cancel`, { method: "POST" }); for (const run of body.runs) updateRun(run); }
+      else for (const id of [...view.ids]) if (active(runs.get(id) || {})) updateRun(await api(`api/runs/${id}/cancel`, { method: "POST" }));
     } catch (err) { notice(err.message); } finally { control.disabled = false; }
   });
   addEventListener("message", (event) => {
@@ -1056,13 +1228,16 @@
     $("open-data-dir").title = openDataDir ? `打开保存文件夹：${boot.dataDir}` : "重新开启插件后可打开保存文件夹";
     $("toggle-data-dir").title = boot.dataDir; $("data-dir").hidden = true;
     if (!batchCleanup) historyNotice("单批删除需要重新开启插件；当前仍可查看历史和使用批量清理。");
+    historyTimeZone = boot.historyTimeZone;
     updateModels(boot.models); for (const run of boot.runs) runs.set(run.id, run); renderHistory(); favoritesUI.init(boot);
     if (boot.error) notice(boot.error);
-    const latest = runs.get(query.get("run")) || boot.runs.find(run => !run.kind || run.kind === "pelican"); if (latest && (!latest.kind || latest.kind === "pelican")) showBatch(batchKey(latest));
-    for (const name of ["fingerprint", "candy"]) { const run = runs.get(query.get(name)) || boot.runs.find(run => run.kind === name); if (run) showBatch(batchKey(run), name); }
-    const history = runs.get(query.get("history")); if (history) showBatch(batchKey(history), "history");
+    for (const [name, kind, param] of [["current", "pelican", "run"], ["fingerprint", "fingerprint", "fingerprint"], ["candy", "candy", "candy"]]) {
+      const pinned = runs.get(query.get(param)), matches = run => run.source !== "automatic" && (run.kind || "pelican") === kind;
+      const run = pinned && matches(pinned) ? pinned : boot.runs.find(matches); if (run) showBatch(batchKey(run), name);
+    }
     if (["fingerprint", "candy"].includes(query.get("mode"))) setView(query.get("mode"));
     if (tabViews.includes(query.get("view"))) setView(query.get("view"));
+    const historyId = historyKeys.get(query.get("history")); if (historyId) showBatch(historyId, "history");
     events();
     } catch (err) {
       initialized = false; updateSettings(); notice(err.message); $("connection").setAttribute("aria-label", "连接失败"); $("connection").title = "连接失败";

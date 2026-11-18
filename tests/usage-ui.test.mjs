@@ -11,7 +11,10 @@ const boot = { models: [model], runs, defaultPrompt: "animate", dataDir: "test",
   favorites: { favorites: [], plans: [], enabled: false, concurrency: 3 } };
 const area = { pelican: "results", fingerprint: "fingerprint-results", candy: "candy-results" };
 const row = (ui, container) => ui.descendants(ui.elements.get(container)).find(item => item.className === "usage-strip");
-const values = (ui, root) => ui.descendants(root).filter(item => item.className === "usage-value").map(item => item.textContent);
+const values = (ui, root) => {
+  const unit = ui.descendants(root).find(item => item.className === "usage-unit" && !item.hidden);
+  return ui.descendants(root).filter(item => item.className === "usage-value").map(item => unit && /^≥?[\d,.]/.test(item.textContent) && !item.textContent.endsWith(" 字") ? `${item.textContent} ${unit.textContent}` : item.textContent);
+};
 
 test("three test cards show both progress channels and retain reported tokens in history", async () => {
   const details = new Map(runs.map(run => [run.id, run]));

@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>模型实验室 · Model Lab</title>
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="polish.css">
   <script src="favorites.js" defer></script>
-  <script src="app.js" defer></script>
+  <script src="app.js" type="module"></script>
 </head>
 <body>
   <a class="skip-link" href="#current-tab">跳到结果</a>
@@ -45,6 +46,7 @@
       <button id="favorites-tab" type="button" class="view-tab" role="tab" aria-selected="false" aria-controls="favorites-panel" tabindex="-1">自动测试</button>
       <button id="history-tab" type="button" class="view-tab" role="tab" aria-selected="false" aria-controls="history-panel" tabindex="-1">历史记录 <span id="history-count" class="count">0 批</span></button>
     </div>
+    <section id="running-batches" class="running-batches" aria-label="正在生成的测试" hidden><span class="help">正在生成</span><div id="running-batch-list" class="running-batch-list"></div></section>
     <div id="workspace" class="workspace">
       <aside id="setup-sidebar" class="setup" aria-label="测试设置">
         <div id="generate-settings">
@@ -53,8 +55,7 @@
           <div class="provider-row"><label for="provider" class="sr-only">供应商</label><select id="provider"><option value="">全部供应商</option></select></div>
           <div class="search-field"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg><label for="model-search" class="sr-only">搜索模型</label><input id="model-search" type="search" placeholder="搜索模型" autocomplete="off"></div>
           <div id="model-list" class="model-list" aria-label="可用模型"></div>
-          <div class="model-list-footer"><span id="model-visible-count" class="help"></span><button id="model-names-toggle" type="button" class="quiet" aria-expanded="false" aria-controls="model-name-panel">完整名称</button></div>
-          <div id="model-name-panel" class="model-name-panel" hidden><div id="model-names-list"></div></div>
+          <div class="model-list-footer"><span id="model-visible-count" class="help"></span></div>
           <div id="selected-models" class="selected-models"></div>
           <button id="favorite-selected" class="favorite-selected quiet" type="button" disabled><svg class="icon" aria-hidden="true"><use href="#i-star"/></svg>加入自动测试</button>
           </section>
@@ -87,7 +88,7 @@
               <p id="account-status" class="help" role="status" hidden></p>
             </div>
             <div class="storage"><div class="storage-heading"><button id="open-data-dir" class="storage-open quiet" type="button" aria-label="打开保存文件夹" title="打开保存文件夹" disabled><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg><span>保存位置</span><svg class="icon" aria-hidden="true"><use href="#i-external"/></svg></button><button id="toggle-data-dir" class="icon-button" type="button" aria-label="查看保存路径" title="查看保存路径" aria-expanded="false" aria-controls="data-dir"><svg class="icon chevron" aria-hidden="true"><use href="#i-chevron"/></svg></button></div><p id="data-dir" class="path" hidden></p><p id="storage-status" class="help" role="status" hidden></p></div>
-            <p class="advanced-meta">Model Lab <span id="version">1.0.1</span></p></div>
+            <p class="advanced-meta">Model Lab <span id="version">1.0.2</span></p></div>
           </details>
           </section>
           <div id="form-error" class="form-error" role="alert" tabindex="-1" hidden></div>
@@ -96,24 +97,25 @@
       <section class="results-area" aria-label="测试结果与历史">
         <div id="notice" class="notice" role="status" hidden></div>
         <section id="current-panel" class="view-panel" role="tabpanel" aria-labelledby="current-tab">
-          <div class="results-heading"><div class="section-heading"><h2 id="results-title">动画结果</h2><span id="batch-note" class="help"></span></div><button id="cancel-all" class="quiet" type="button" hidden>取消本批次</button></div>
-          <div id="preview-scroll" class="preview-scroll" role="region" aria-label="本次动画结果" tabindex="0">
+          <div id="preview-scroll" class="preview-scroll" role="region" aria-label="动画结果与最近批次" tabindex="0">
+            <div class="results-heading"><div class="section-heading"><h2 id="results-title">本批次</h2><span id="batch-note" class="help"></span></div><button id="cancel-all" class="quiet" type="button" hidden>取消本批次</button></div>
             <div id="results" class="results-grid"></div>
             <div id="empty-state" class="empty-state"><span class="empty-mark"><svg class="empty-icon icon" aria-hidden="true"><use href="#i-pelican"/></svg></span><p>选择模型，开始测试</p></div>
+            <div id="current-recent" class="recent-batches" hidden></div>
           </div>
         </section>
         <section id="fingerprint-panel" class="view-panel" role="tabpanel" aria-labelledby="fingerprint-tab" hidden>
-          <div class="results-heading"><div class="section-heading"><h2>指纹结果</h2><span id="fingerprint-note" class="help"></span></div><button id="fingerprint-cancel" class="quiet" type="button" hidden>取消本批次</button></div>
-          <div id="fingerprint-scroll" class="preview-scroll" role="region" aria-label="本次指纹结果" tabindex="0"><div id="fingerprint-results" class="results-grid"></div><div id="fingerprint-empty" class="empty-state"><span class="empty-mark"><svg class="empty-icon icon" aria-hidden="true"><use href="#i-fingerprint"/></svg></span><p>选择模型，检测指纹</p></div></div>
+          <div id="fingerprint-scroll" class="preview-scroll" role="region" aria-label="指纹结果与最近批次" tabindex="0"><div class="results-heading"><div class="section-heading"><h2>本批次</h2><span id="fingerprint-note" class="help"></span></div><button id="fingerprint-cancel" class="quiet" type="button" hidden>取消本批次</button></div><div id="fingerprint-results" class="results-grid"></div><div id="fingerprint-empty" class="empty-state"><span class="empty-mark"><svg class="empty-icon icon" aria-hidden="true"><use href="#i-fingerprint"/></svg></span><p>选择模型，检测指纹</p></div><div id="fingerprint-recent" class="recent-batches" hidden></div></div>
         </section>
         <section id="candy-panel" class="view-panel" role="tabpanel" aria-labelledby="candy-tab" hidden>
-          <div class="results-heading"><div class="section-heading"><h2>糖果结果</h2><span id="candy-note" class="help"></span></div><button id="candy-cancel" class="quiet" type="button" hidden>取消本批次</button></div>
-          <div id="candy-scroll" class="preview-scroll" role="region" aria-label="本次糖果结果" tabindex="0"><div id="candy-results" class="results-grid"></div><div id="candy-empty" class="empty-state"><span class="empty-mark"><svg class="empty-icon icon" aria-hidden="true"><use href="#i-candy"/></svg></span><p>选择模型，测试糖果题</p></div></div>
+          <div id="candy-scroll" class="preview-scroll" role="region" aria-label="糖果结果与最近批次" tabindex="0"><div class="results-heading"><div class="section-heading"><h2>本批次</h2><span id="candy-note" class="help"></span></div><button id="candy-cancel" class="quiet" type="button" hidden>取消本批次</button></div><div id="candy-results" class="results-grid"></div><div id="candy-empty" class="empty-state"><span class="empty-mark"><svg class="empty-icon icon" aria-hidden="true"><use href="#i-candy"/></svg></span><p>选择模型，测试糖果题</p></div><div id="candy-recent" class="recent-batches" hidden></div></div>
         </section>
         <section id="favorites-panel" class="view-panel favorites-panel" role="tabpanel" aria-labelledby="favorites-tab" hidden>
-          <div class="favorites-heading"><div class="section-heading"><h2>自动测试</h2><span id="favorite-count" class="count">0</span></div><div class="header-actions"><button id="favorite-manage" class="quiet" type="button">管理模型</button><button id="favorite-add" type="button"><svg class="icon" aria-hidden="true"><use href="#i-star"/></svg>添加模型</button></div></div>
-          <div class="favorite-toolbar"><div class="segments" role="group" aria-label="自动测试类型"><button id="favorite-candy" type="button" aria-pressed="true">糖果</button><button id="favorite-pelican" type="button" aria-pressed="false">动画长廊</button></div><div class="favorite-filters"><label for="favorite-provider" class="sr-only">筛选供应商</label><select id="favorite-provider"><option value="">全部供应商</option></select></div></div>
+          <div class="favorites-heading"><div class="section-heading"><h2>自动测试</h2><span id="favorite-count" class="count">0</span></div><div class="header-actions"><button id="favorite-manage" type="button"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>管理模型</button><button id="favorite-add" type="button"><svg class="icon" aria-hidden="true"><use href="#i-star"/></svg>添加模型</button></div></div>
+          <div class="favorite-toolbar"><div class="segments" role="group" aria-label="自动测试类型"><button id="favorite-candy" type="button" aria-pressed="true">糖果概览</button><button id="favorite-pelican" type="button" aria-pressed="false">动画长廊</button></div><div class="favorite-filters"><label for="favorite-provider" class="sr-only">筛选供应商</label><select id="favorite-provider"><option value="">全部供应商</option></select></div></div>
+          <div id="gallery-navigation" class="gallery-navigation" hidden><span class="help">按模型查看时段结果</span><div class="segments" role="group" aria-label="动画时段"><button id="gallery-earlier" type="button" aria-pressed="false">较早时段</button><button id="gallery-now" type="button" aria-pressed="false">当前时段</button><button id="gallery-newer" type="button" aria-pressed="false">较新时段</button></div></div>
           <p id="favorite-status" class="help favorite-status" role="status" hidden></p>
+          <div id="favorite-card-legend" class="status-legend favorite-global-legend"><span><i class="legend-match"></i>答案匹配</span><span><i class="legend-mismatch"></i>答案不匹配</span><span><i class="legend-failure"></i>失败 / 中断</span><span><i class="legend-pending"></i>待运行</span></div>
           <div id="favorite-scroll" class="preview-scroll" role="region" aria-label="自动测试结果" tabindex="0"><div id="favorite-candy-grid" class="favorite-candy-grid"></div><div id="favorite-results" class="animation-gallery" hidden></div><div id="favorite-empty" class="favorite-empty" hidden><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg><h3>让常用模型按时测试</h3><p class="help">添加模型，分别设置糖果与动画计划。</p><button id="favorite-empty-add" type="button">添加模型</button></div></div>
           <div class="favorite-pagination"><span id="favorite-page-info" class="help"></span><div><button id="favorite-prev" class="quiet" type="button">上一页</button><button id="favorite-next" class="quiet" type="button">下一页</button></div></div>
         </section>
@@ -125,17 +127,12 @@
             <p id="cleanup-status" class="help" role="status"></p>
           </div>
           <p id="history-status" class="help history-status" role="status" hidden></p>
-          <section id="export-panel" class="export-panel" aria-labelledby="export-heading" hidden>
-            <div class="export-heading"><div class="export-label"><h2 id="export-heading">导出记录</h2><span id="export-summary" class="help"></span></div><div class="export-actions"><button id="export-toggle" class="quiet" type="button" aria-expanded="false" aria-controls="export-preview" disabled>查看 JSON</button><button id="export-copy" type="button" disabled>复制 JSON</button><button id="export-close" class="icon-button" type="button" aria-label="关闭导出"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div></div>
-            <div id="export-preview" hidden><label for="export-json" class="sr-only">导出的批次 JSON</label><textarea id="export-json" class="source-view" readonly spellcheck="false"></textarea></div>
-            <p id="export-status" class="help" role="status" hidden></p>
-          </section>
-          <div class="history-scroll" tabindex="0" role="region" aria-label="历史批次与预览">
+          <div id="history-scroll" class="history-scroll" tabindex="0" role="region" aria-label="历史批次">
             <div id="history-list" class="history-list"></div>
           </div>
           <section id="history-detail" class="history-detail" aria-label="所选历史批次" hidden>
-            <div class="results-heading"><div class="section-heading"><h2>批次预览</h2><span id="history-batch-note" class="help"></span></div><button id="history-cancel" class="quiet" type="button" hidden>取消此批次</button></div>
-            <div id="history-preview-scroll" class="preview-scroll" role="region" aria-label="历史动画结果" tabindex="0">
+            <div class="results-heading"><div class="section-heading"><h2 id="history-preview-title">批次预览</h2><span id="history-batch-note" class="help"></span></div><button id="history-cancel" class="quiet" type="button" hidden>取消此批次</button></div>
+            <div id="history-preview-scroll" class="preview-scroll" role="region" aria-label="历史测试结果" tabindex="0">
               <div id="history-results" class="results-grid"></div>
               <p id="history-empty" class="help" hidden>选择一批历史记录查看结果</p>
             </div>
@@ -144,6 +141,13 @@
       </section>
     </div>
   </main>
-  <section id="favorite-drawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden><button id="drawer-backdrop" class="drawer-backdrop" type="button" aria-label="关闭侧栏" tabindex="-1"></button><div class="drawer-sheet"><header class="drawer-header"><h2 id="drawer-title">自动测试设置</h2><button id="drawer-close" class="icon-button" type="button" aria-label="关闭侧栏"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></header><div id="drawer-content" class="drawer-content"></div><p id="drawer-status" class="form-error" role="status" tabindex="-1" hidden></p></div></section>
+  <section id="favorite-drawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden><button id="drawer-backdrop" class="drawer-backdrop" type="button" aria-label="关闭面板" tabindex="-1"></button><div class="drawer-sheet"><header class="drawer-header"><div><button id="drawer-back" class="back-button" type="button" hidden>返回</button><h2 id="drawer-title" tabindex="-1">自动测试设置</h2></div><div class="drawer-header-actions"><div id="drawer-tools"></div><button id="drawer-close" class="icon-button" type="button" aria-label="关闭面板"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div></header><div id="drawer-content" class="drawer-content"></div><p id="drawer-status" class="form-error" role="status" tabindex="-1" hidden></p><footer id="drawer-footer" class="drawer-footer"></footer></div></section>
+  <dialog id="export-panel" class="export-panel" aria-labelledby="export-heading" hidden>
+    <div class="export-heading"><div class="export-label"><h2 id="export-heading">导出记录</h2><span id="export-summary" class="help"></span></div><button id="export-close" class="icon-button" type="button" aria-label="关闭导出" autofocus><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+    <div class="export-actions"><button id="export-toggle" type="button" aria-expanded="false" aria-controls="export-preview" disabled>查看 JSON</button><button id="export-copy" type="button" disabled>复制 JSON</button><button id="export-download" type="button" disabled>下载 JSON</button></div>
+    <div id="export-preview" hidden><label for="export-json" class="sr-only">导出的批次 JSON</label><textarea id="export-json" class="source-view" readonly spellcheck="false"></textarea></div>
+    <p id="export-status" class="help" role="status" hidden></p>
+  </dialog>
+  <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title"><h2 id="confirm-title">确认操作</h2><p id="confirm-message"></p><div class="confirm-actions"><button id="confirm-cancel" type="button">取消</button><button id="confirm-accept" class="danger" type="button">确认</button></div></dialog>
 </body>
 </html>

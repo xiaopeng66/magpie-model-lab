@@ -222,14 +222,12 @@ test("reopening fingerprint details retries a failed read without resampling", a
   assert.equal(reads, 2);
 });
 
-test("model names and providers occupy separate rows and full names are available without hover", async () => {
+test("model names and providers occupy separate rows without a full-name disclosure", async () => {
   const ui = await uiHarness({ bootstrap: boot(), detail: details });
   await waitFor(() => ui.descendants(ui.elements.get("model-list"), "strong").length);
   assert.equal(ui.descendants(ui.elements.get("model-list"), "strong")[0].textContent, "A very long model name");
   assert.equal(ui.descendants(ui.elements.get("model-list"), "small")[0].textContent, "Fixture");
-  const toggle = ui.elements.get("model-names-toggle"); assert.ok(toggle, "A compact list needs an operable full-name disclosure");
-  await toggle.fire("click"); assert.equal(ui.elements.get("model-name-panel").hidden, false);
-  assert.ok(ui.descendants(ui.elements.get("model-names-list")).some(item => item.textContent.includes(model.id)));
+  assert.equal(ui.elements.get("model-names-toggle"), undefined);
   ui.elements.get("provider").value = "fixture"; await ui.elements.get("provider").fire("change");
   assert.equal(ui.descendants(ui.elements.get("model-list"), "small").length, 0);
 });
