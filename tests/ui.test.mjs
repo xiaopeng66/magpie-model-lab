@@ -12,6 +12,8 @@ const model = { id: "fixture/one", name: "Fixture", provider: "fixture", provide
 const boot = (runs) => ({ models: [model], runs, defaultPrompt: "test", dataDir: "test-dir", version: "test", batchCleanup: true });
 const control = (ui, label) => ui.descendants(ui.elements.get("results"), "button")
   .find((element) => element.attributes["aria-label"] === label || element.textContent === label);
+const drawerControl = (ui, label) => ["drawer-content", "drawer-tools"].flatMap(id => ui.descendants(ui.elements.get(id), "button"))
+  .find(element => element.getAttribute("aria-label") === label || element.textContent === label);
 const historyRows = ui => ui.descendants(ui.elements.get("history-list"), "button").filter(element => element.className === "history-row");
 const historyDeletes = ui => ui.descendants(ui.elements.get("history-list"), "button").filter(element => element.className === "history-delete");
 
@@ -281,22 +283,23 @@ test("history updates retain the existing row, buttons and focus rather than reb
   assert.equal(historyRows(ui)[0], row); assert.equal(historyDeletes(ui)[0], remove);
 });
 
-test("streaming bursts refresh once per animation frame and leave collapsed source and icons untouched", async () => {
+test("streaming bursts refresh once per animation frame and leave closed details and icons untouched", async () => {
   const pending = { ...run, status: "running", hasHTML: false };
   const ui = await uiHarness({ bootstrap: boot([pending]), detail: () => pending });
   await waitFor(() => ui.descendants(ui.elements.get("results"), "article").length === 1);
-  const source = ui.descendants(ui.elements.get("results"), "pre")[0], badge = ui.descendants(ui.elements.get("results"), "span").find(element => element.className === "badge running");
-  const toggle = control(ui, "源码与详情"), play = control(ui, "停止预览");
+  const panel = ui.elements.get("drawer-content"), badge = ui.descendants(ui.elements.get("results"), "span").find(element => element.className === "badge running");
+  const toggle = control(ui, "源码与详情"), replay = control(ui, "重播");
   const progress = ui.descendants(ui.elements.get("results")).find(element => element.className === "progress-line");
-  const writes = { source: source.textWrites, badge: badge.textWrites, play: play.replacements };
+  const writes = { badge: badge.textWrites, replay: replay.replacements };
   for (let index = 0; index < 100; index++) ui.event("delta", { id, content: "鹈", contentChars: index + 1, reasoningChars: 0 });
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(ui.pendingFrames(), 1, "One render is scheduled for the whole burst");
-  assert.equal(source.textWrites, writes.source); assert.equal(badge.textWrites, writes.badge); assert.equal(play.replacements, writes.play);
+  assert.equal(badge.textWrites, writes.badge); assert.equal(replay.replacements, writes.replay);
   ui.flushFrames(); assert.equal(ui.pendingFrames(), 0);
   assert.equal(ui.descendants(ui.elements.get("results")).find(element => element.className === "progress-line"), progress, "Refreshing character counts must not restart the progress animation");
-  assert.equal(source.textWrites, writes.source, "Collapsed source does not copy the ever-growing response into DOM");
-  await toggle.fire("click"); await control(ui, "原始输出").fire("click"); assert.equal(source.textContent, "鹈".repeat(100));
+  assert.equal(ui.descendants(panel, "pre").length, 0, "Closed details do not copy streaming output into the DOM");
+  await toggle.fire("click"); await drawerControl(ui, "原始输出").fire("click");
+  assert.equal(ui.descendants(panel, "pre")[0].textContent, "鹈".repeat(100));
 });
 
 test("a late active detail cannot regress a completed run and the current terminal detail is loaded", async () => {
@@ -317,10 +320,10 @@ test("an active detail snapshot already containing a queued SSE chunk does not d
   const pending = { ...run, status: "running", hasHTML: false, contentChars: 0 };
   let release; const ui = await uiHarness({ bootstrap: boot([pending]), detail: () => new Promise(resolve => { release = resolve; }) });
   await waitFor(() => ui.descendants(ui.elements.get("results"), "article").length === 1);
-  await control(ui, "源码与详情").fire("click"); await control(ui, "原始输出").fire("click");
+  await control(ui, "源码与详情").fire("click"); await drawerControl(ui, "原始输出").fire("click");
   release({ ...pending, contentChars: undefined, content: "鹈鹕" }); await new Promise(resolve => setTimeout(resolve, 20));
   ui.event("delta", { id, content: "鹈鹕", contentChars: 2, reasoningChars: 0 }); await new Promise(resolve => setTimeout(resolve, 20)); ui.flushFrames();
-  assert.equal(ui.descendants(ui.elements.get("results"), "pre")[0].textContent, "鹈鹕");
+  assert.equal(ui.descendants(ui.elements.get("drawer-content"), "pre")[0].textContent, "鹈鹕");
 });
 
 test("a queued detail arriving after generation starts preserves its live running status", async () => {
@@ -332,7 +335,7 @@ test("a queued detail arriving after generation starts preserves its live runnin
   release({ ...pending, content: "" }); await new Promise(resolve => setTimeout(resolve, 20));
   const badge = ui.descendants(ui.elements.get("results"), "span").find(element => element.className.includes("badge"));
   assert.equal(badge.textContent, "生成中");
-  const elapsed = ui.descendants(ui.elements.get("results"), "span").find(element => element.className === "stat-value");
+  const elapsed = ui.descendants(ui.elements.get("drawer-content"), "span").find(element => element.className === "stat-value");
   assert.match(elapsed.textContent, / s$/, "The late queued detail must also preserve the start time");
 });
 
@@ -340,10 +343,10 @@ test("a delayed detail snapshot restores the output prefix while preserving late
   const pending = { ...run, status: "running", hasHTML: false, contentChars: 2 };
   let release; const ui = await uiHarness({ bootstrap: boot([pending]), detail: () => new Promise(resolve => { release = resolve; }) });
   await waitFor(() => ui.descendants(ui.elements.get("results"), "article").length === 1);
-  await control(ui, "源码与详情").fire("click"); await control(ui, "原始输出").fire("click");
+  await control(ui, "源码与详情").fire("click"); await drawerControl(ui, "原始输出").fire("click");
   ui.event("delta", { id, content: "骑车", contentChars: 4, reasoningChars: 0 }); await new Promise(resolve => setTimeout(resolve, 20));
   release({ ...pending, content: "鹈鹕" }); await new Promise(resolve => setTimeout(resolve, 20)); ui.flushFrames();
-  assert.equal(ui.descendants(ui.elements.get("results"), "pre")[0].textContent, "鹈鹕骑车");
+  assert.equal(ui.descendants(ui.elements.get("drawer-content"), "pre")[0].textContent, "鹈鹕骑车");
 });
 
 test("calendar keyboard navigation crosses a month and closing cleanup restores keyboard focus", async () => {
@@ -698,12 +701,17 @@ test("thumbnail scales a full logical viewport instead of cropping a fixed-size 
 test("preview controls unload the frame and reload without a new model request", async () => {
   const ui = await uiHarness({ bootstrap: boot([run]), detail: async () => ({ ...run, html: FIXTURE_HTML, content: FIXTURE_HTML, previewUrl: `preview/${id}?key=test` }) });
   await waitFor(() => ui.descendants(ui.elements.get("results"), "iframe").length === 1);
-  const stop = control(ui, "停止预览");
+  await control(ui, "源码与详情").fire("click");
+  const panel = ui.elements.get("drawer-content");
+  const stop = ui.descendants(ui.elements.get("drawer-footer"), "button").find(button => button.getAttribute("aria-label") === "停止预览");
+  assert.equal(ui.descendants(panel, "iframe").length, 1);
   await stop.fire("click");
   assert.equal(ui.descendants(ui.elements.get("results"), "iframe").length, 0);
+  assert.equal(ui.descendants(panel, "iframe").length, 0);
   assert.equal(stop.attributes["aria-label"] || stop.textContent, "播放预览");
   await stop.fire("click");
   assert.equal(ui.descendants(ui.elements.get("results"), "iframe").length, 1);
+  assert.equal(ui.descendants(panel, "iframe").length, 1);
 });
 
 test("replay obtains a current preview link instead of reusing the cached one", async () => {
@@ -726,11 +734,15 @@ test("failed replay shows a recoverable error and a later replay loads the saved
   const replay = control(ui, "重播");
   await replay.fire("click");
   assert.equal(ui.descendants(ui.elements.get("results"), "iframe").length, 0);
-  const error = ui.descendants(ui.elements.get("results"), "p").find((element) => element.className === "card-message");
-  assert.equal(error.textContent, "temporary preview failure");
+  const error = ui.descendants(ui.elements.get("results")).find(element => element.className === "error-summary");
+  const errorDetail = control(ui, "查看错误详情");
+  assert.ok(errorDetail);
   assert.equal(error.hidden, false);
   assert.equal(replay.disabled, false);
   assert.equal(attempts, 2, "A failed detail request must not trigger a render/request loop");
+  await errorDetail.fire("click");
+  assert.ok(ui.descendants(ui.elements.get("drawer-content")).some(element => element.textContent === "temporary preview failure"));
+  await ui.elements.get("drawer-close").fire("click");
   await replay.fire("click");
   assert.equal(ui.descendants(ui.elements.get("results"), "iframe").length, 1);
   assert.equal(error.hidden, true);
@@ -742,33 +754,60 @@ test("opening saved animation details retries an earlier failed read", async () 
     if (++reads === 1) throw new Error("Temporary read failure");
     return { ...run, html: FIXTURE_HTML, previewUrl: `preview/${id}?key=fixture` };
   } });
-  await waitFor(() => ui.descendants(ui.elements.get("results")).some(item => item.textContent === "Temporary read failure"));
+  await waitFor(() => control(ui, "查看错误详情")?.getClientRects().length);
   assert.equal(reads, 1);
   await control(ui, "源码与详情").fire("click");
   await waitFor(() => ui.descendants(ui.elements.get("results"), "iframe").length === 1);
   assert.equal(reads, 2);
 });
 
-test("result details start hidden and disclose source and metrics without another generation", async () => {
+test("animation details use the shared right drawer with preview, source and original output", async () => {
   const ui = await uiHarness({ bootstrap: boot([run]), detail: async () => ({ ...run, html: FIXTURE_HTML, content: "original response",
     usage: { total_tokens: 160 }, elapsedMs: 2000, previewUrl: `preview/${id}?key=test` }) });
   await waitFor(() => ui.descendants(ui.elements.get("results"), "iframe").length === 1);
   const toggle = control(ui, "源码与详情");
   assert.ok(toggle, "Secondary result actions need one disclosure control");
-  const panel = ui.descendants(ui.elements.get("results")).find((element) => element.className === "card-detail");
-  assert.ok(panel);
-  assert.equal(panel.hidden, true);
-  assert.equal(toggle.attributes["aria-expanded"], "false");
+  const drawer = ui.elements.get("favorite-drawer"), panel = ui.elements.get("drawer-content");
+  assert.equal(drawer.hidden, true);
+  toggle.focus();
   await toggle.fire("click");
-  assert.equal(panel.hidden, false);
-  assert.equal(toggle.attributes["aria-expanded"], "true");
+  assert.equal(drawer.hidden, false);
+  assert.equal(drawer.dataset.mode, "reading");
+  assert.equal(ui.elements.get("drawer-title").textContent, "动画详情");
+  assert.equal(ui.descendants(panel, "iframe")[0].getAttribute("sandbox"), "allow-scripts");
+  await drawerControl(ui, "HTML 源码").fire("click");
   assert.equal(ui.descendants(panel, "pre")[0].textContent, FIXTURE_HTML);
   assert.ok(ui.descendants(panel, "span").some((element) => element.textContent === "160"));
-  await control(ui, "原始输出").fire("click");
+  await drawerControl(ui, "复制源码").fire("click");
+  assert.deepEqual(ui.copied, [FIXTURE_HTML]);
+  await drawerControl(ui, "原始输出").fire("click");
   assert.equal(ui.descendants(panel, "pre")[0].textContent, "original response");
+  assert.equal(ui.descendants(panel, "iframe").length, 0, "The large preview unloads when reading output");
   assert.equal(ui.descendants(ui.elements.get("results"), "iframe").length, 1, "Inspecting source must keep the existing preview mounted");
-  await toggle.fire("click");
-  assert.equal(panel.hidden, true);
+  await drawer.fire("keydown", { key: "Escape" });
+  assert.equal(drawer.hidden, true);
+  assert.equal(ui.document.activeElement, toggle);
+});
+
+test("animation details collapse the raw error unless opened from the error button", async () => {
+  const raw = "Fixture: upstream request failed (HTTP 502)", failed = { ...run, status: "error", hasHTML: false, error: raw };
+  const ui = await uiHarness({ bootstrap: boot([failed]), detail: () => failed });
+  const drawer = ui.elements.get("favorite-drawer"), panel = ui.elements.get("drawer-content");
+  const disclosure = () => ui.descendants(panel, "summary").find(item => item.textContent === "原始错误详情");
+  await waitFor(() => control(ui, "查看错误详情")?.getClientRects().length);
+  const errorButton = control(ui, "查看错误详情");
+  await control(ui, "源码与详情").fire("click");
+  assert.ok(disclosure(), "The raw error must have a disclosure");
+  assert.equal(disclosure().parentElement.open, false);
+  const errorText = ui.descendants(disclosure().parentElement, "pre")[0];
+  assert.equal(errorText.textContent, raw);
+  assert.equal(errorText.getClientRects().length, 0);
+  await drawer.fire("keydown", { key: "Escape" });
+  await errorButton.fire("click");
+  assert.equal(disclosure().parentElement.open, true);
+  assert.equal(ui.document.activeElement, disclosure());
+  await drawer.fire("keydown", { key: "Escape" });
+  assert.equal(ui.document.activeElement, errorButton);
 });
 
 test("replay after a host restart reloads the expired page and resumes its saved result without a model request", async (t) => {

@@ -7,6 +7,7 @@ import { Gateway } from "../lib/gateway.mjs";
 import { RunStore } from "../lib/store.mjs";
 import { Runner } from "../lib/runner.mjs";
 import { Favorites } from "../lib/favorites.mjs";
+import { historyBatches } from "../lib/history-groups.mjs";
 import { temporary, fakeGateway, waitFor } from "./helpers.mjs";
 
 for (const transport of ["http", "stream"]) test(`${transport} generation errors never persist an echoed gateway credential`, async t => {
@@ -95,4 +96,22 @@ test("corrupt automatic history cannot break healthy history or be rewritten dur
   for (const id of await readdir(dir)) if (id !== good.id) {
     assert.deepEqual(await readdir(join(dir, id)), ["run.json"], "Recovery must keep damaged records untouched");
   }
+});
+
+test("UUID arrays in saved batch identifiers cannot split healthy history into unexportable groups", async t => {
+  const dir = await temporary(t), store = new RunStore(dir); await store.init();
+  const good = { id: randomUUID(), batchId: randomUUID(), kind: "candy", model: "fixture/one", status: "completed",
+    createdAt: new Date().toISOString(), content: "最终答案：21", candy: { answer: 21, verdict: "match" } };
+  await store.save(good);
+  const damaged = [];
+  for (const patch of [{ batchId: [good.batchId] }, { roundId: [good.batchId] }]) {
+    const id = randomUUID(), path = join(dir, id, "run.json"), bytes = JSON.stringify({ ...good, id, ...patch });
+    await mkdir(join(dir, id)); await writeFile(path, bytes); damaged.push({ path, bytes });
+  }
+  const restored = new RunStore(dir), recovery = await restored.init();
+  assert.equal(recovery.unreadable, 2, "A coercible UUID value is not a string batch identifier");
+  assert.deepEqual(restored.list().map(run => run.id), [good.id]);
+  const groups = historyBatches(restored.list());
+  assert.equal(groups.length, 1); assert.equal(groups[0].id, good.batchId);
+  for (const item of damaged) assert.equal(await readFile(item.path, "utf8"), item.bytes, "Keep damaged metadata available for recovery");
 });

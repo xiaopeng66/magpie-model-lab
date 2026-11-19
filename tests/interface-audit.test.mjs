@@ -77,7 +77,7 @@ test("plan parameters are visible without a nested editor and closing restores f
 test("a late slot cancellation cannot close a newer settings drawer", async t => {
   const waiting = deferred(); t.after(() => waiting.resolve({ ...run, status: "cancelled" })); let count = 0;
   const ui = await uiHarness({ bootstrap: boot, detail: () => ++count === 1 ? { ...run, content: "" } : waiting.promise }); await ready(ui);
-  await bars(ui)[0].fire("click"); const cancelling = label(ui, drawer(ui), "取消本次").fire("click");
+  await bars(ui)[0].fire("click"); const cancelling = label(ui, footer(ui), "取消本次").fire("click");
   await ui.elements.get("drawer-close").fire("click"); await settings(ui);
   waiting.resolve({ ...run, status: "cancelled" }); await cancelling;
   assert.equal(ui.elements.get("favorite-drawer").hidden, false); assert.equal(ui.elements.get("drawer-title").textContent, "糖果计划");
@@ -86,11 +86,12 @@ test("a late slot cancellation cannot close a newer settings drawer", async t =>
 test("copy waits for an actual reply; finished record details include the final reasoning", async () => {
   let detail = { ...run, content: "", reasoning: "" };
   const ui = await uiHarness({ bootstrap: boot, detail: () => structuredClone(detail) }); await ready(ui); await bars(ui)[0].fire("click");
-  const copy = label(ui, drawer(ui), "复制回答"); assert.equal(copy.disabled, true);
+  const copy = label(ui, ui.elements.get("drawer-tools"), "复制回答"); assert.equal(copy.disabled, true);
   detail = { ...run, status: "completed", content: "最终答案：21", reasoning: "最终推理", candy: { verdict: "match", answer: 21 }, usage: { total_tokens: 120 } };
   ui.event("run", { run: detail }); await waitFor(() => ui.descendants(drawer(ui)).some(e => e.textContent === "最终答案：21"));
-  assert.equal(copy.disabled, false); assert.ok(ui.descendants(drawer(ui)).some(e => e.textContent === "最终推理"));
+  assert.equal(copy.disabled, false);
   await copy.fire("click"); assert.equal(ui.copied.at(-1), "最终答案：21");
+  await label(ui, drawer(ui), "思考").fire("click"); assert.ok(ui.descendants(drawer(ui)).some(e => e.textContent === "最终推理"));
 });
 
 test("switching history source excludes automatic runs from legacy favorites and hides mismatched preview", async () => {
@@ -141,9 +142,9 @@ test("slot keyboard navigation and drawer focus loop include expanded source pan
   const ui = await uiHarness({ bootstrap: boot, detail: () => ({ ...run, content: "partial answer" }) }); await ready(ui);
   const [first, last] = bars(ui); first.focus(); await first.fire("keydown", { key: "End" }); assert.ok(ui.document.activeElement === last);
   await last.fire("keydown", { key: "Home" }); assert.ok(ui.document.activeElement === first);
-  await first.fire("click"); const cancel = label(ui, drawer(ui), "取消本次"); cancel.focus();
-  await ui.elements.get("favorite-drawer").fire("keydown", { key: "Tab" }); assert.ok(ui.document.activeElement === ui.elements.get("drawer-close"));
-  await ui.elements.get("favorite-drawer").fire("keydown", { key: "Tab", shiftKey: true }); assert.ok(ui.document.activeElement === cancel);
+  await first.fire("click"); const lastControl = label(ui, footer(ui), "关闭详情"); lastControl.focus();
+  await ui.elements.get("favorite-drawer").fire("keydown", { key: "Tab" }); assert.ok(ui.document.activeElement === label(ui, ui.elements.get("drawer-tools"), "复制回答"));
+  await ui.elements.get("favorite-drawer").fire("keydown", { key: "Tab", shiftKey: true }); assert.ok(ui.document.activeElement === lastControl);
 });
 
 test("late create failure remains visible after switching from a test to history", async t => {
@@ -204,4 +205,18 @@ test("model selections made while adding an earlier selection are kept in the dr
   assert.equal(ui.descendants(drawer(ui), "input").find(item => item.getAttribute("aria-label")?.startsWith("Two"))?.checked, true);
   await label(ui, footer(ui), "添加模型 · 1").fire("click");
   assert.equal(calls, 2); assert.equal(ui.elements.get("favorite-drawer").hidden, true);
+});
+
+test("removing a selected model keeps keyboard navigation on the next model, then the previous model, then search", async () => {
+  const models = [model, { ...model, id: "fixture/two", name: "Two" }, { ...model, id: "fixture/three", name: "Three" }];
+  const ui = await uiHarness({ bootstrap: { ...boot, models, runs: [] } }); await ready(ui, "candy");
+  for (const pick of ui.descendants(ui.elements.get("model-list"), "input")) { pick.checked = true; await pick.fire("change"); }
+  const remove = id => label(ui, ui.elements.get("selected-models"), `移除 ${id}`);
+  const middle = remove("fixture/two"); middle.focus(); await middle.fire("click");
+  assert.ok(ui.document.activeElement === remove("fixture/three"));
+  const last = remove("fixture/three"); last.focus(); await last.fire("click");
+  assert.ok(ui.document.activeElement === remove(model.id));
+  const final = remove(model.id); final.focus(); await final.fire("click");
+  assert.ok(ui.document.activeElement === ui.elements.get("model-search"));
+  assert.equal(ui.elements.get("selection-count").textContent, "已选 0");
 });

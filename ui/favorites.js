@@ -1,16 +1,22 @@
 /* Shared favorites use the same saved runs and preview components as the test pages. */
 "use strict";
-globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, api, models, runs, modelLabel, when, active, makeUsage, renderUsage, mount, updateRun, confirmAction, isVisible, initialKind, rememberView }) {
+globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, api, models, runs, modelLabel, active, makeUsage, renderUsage, mount, openResultDetail, confirmAction, isVisible, initialKind, rememberView }) {
   const labels = { candy: "糖果", pelican: "动画" }, candyCards = new Map(), animationRows = new Map(), pendingActions = new WeakSet(), pendingPlans = new Set();
   let state = { favorites: [], plans: [], enabled: true, concurrency: 3 }, supported = false, kind = initialKind === "pelican" ? "pelican" : "candy", page = 0, opener = null, drawerVersion = 0, refreshTask = null, refreshAgain = false;
-  let fieldNumber = 0, recordUsage = null;
+  let fieldNumber = 0, disposeDrawer = null, feedbackTimer;
   const post = (path, body) => api(path, { method: "POST", body: JSON.stringify(body) });
-  const status = (message, panel = false, tone = "error") => { const target = $(panel ? "drawer-status" : "favorite-status"); text(target, message); target.hidden = !message; target.dataset.tone = tone; };
+  const status = (message, panel = false, tone = "error") => {
+    const target = $(panel ? "drawer-status" : "favorite-status");
+    if (!panel) {
+      clearTimeout(feedbackTimer);
+      if (message && tone === "success") feedbackTimer = setTimeout(() => { target.hidden = true; }, 3500);
+    }
+    text(target, message); target.hidden = !message; target.dataset.tone = tone;
+  };
   const filtered = () => state.favorites.filter(f => !$("favorite-provider").value || f.provider === $("favorite-provider").value);
   const titleOf = favorite => modelLabel({ id: favorite.modelId, name: favorite.modelName, provider: favorite.provider, providerName: favorite.providerName }, false);
   const verdictOf = run => run.status === "completed" ? run.candy?.verdict || "review" : "incomplete";
   const verdictLabel = run => active(run) ? run.status === "running" ? "生成中" : "排队中" : ({ match: "答案 21", mismatch: `答案 ${run.candy?.answer}`, review: "待复核", incomplete: ({ error: "请求失败", cancelled: "已取消", interrupted: "已中断", truncated: "已截断" })[run.status] || "未完成" })[verdictOf(run)];
-  const tokenLabel = value => value === 0 ? "不设输出上限" : `${value ?? 64000} Token`;
   const planOf = favorite => state.plans.find(plan => plan.favoriteIds[0] === favorite.id && plan.kinds[0] === kind);
   const phaseLabel = { waiting: "待运行", paused: "已暂停", missed: "已错过", skipped: "已跳过", started: "结果已清理", error: "请求失败" };
   function animationTarget(slots, now = Date.now()) {
@@ -59,14 +65,17 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
 
   function closeDrawer() {
     if ($("favorite-drawer").hidden) return;
-    drawerVersion++; recordUsage = null; $("favorite-drawer").hidden = true; $("drawer-content").replaceChildren(); $("drawer-footer").replaceChildren(); status("", true);
+    disposeDrawer?.(); disposeDrawer = null; $("drawer-tools").replaceChildren();
+    drawerVersion++; $("favorite-drawer").hidden = true; $("drawer-content").replaceChildren(); $("drawer-footer").replaceChildren(); status("", true);
     delete document.documentElement.dataset.drawerOpen;
     const app = document.querySelector("main.app"); if (app) app.inert = false;
-    const target = opener?.isConnected && !opener.disabled ? opener : $("favorite-add"); target.focus({ preventScroll: true }); opener = null;
+    const target = opener?.getClientRects().length && !opener.disabled ? opener : document.querySelector('.view-tab[aria-selected="true"]');
+    target?.focus({ preventScroll: true }); opener = null;
   }
-  function openDrawer(title, origin, mode = "compact") {
+  function openDrawer(title, origin, mode = "compact", dispose = null) {
     if ($("favorite-drawer").hidden) opener = origin || document.activeElement || $("favorite-add");
-    drawerVersion++; recordUsage = null; $("drawer-content").scrollTop = 0;
+    disposeDrawer?.(); disposeDrawer = dispose; $("drawer-tools").replaceChildren();
+    drawerVersion++; $("drawer-content").scrollTop = 0;
     text($("drawer-title"), title); $("drawer-content").replaceChildren(); $("drawer-footer").replaceChildren(); $("drawer-back").hidden = true; $("drawer-back").onclick = null; status("", true); $("favorite-drawer").dataset.mode = mode; $("favorite-drawer").hidden = false;
     document.documentElement.dataset.drawerOpen = "true";
     const app = document.querySelector("main.app"); if (app) app.inert = true;
@@ -148,12 +157,13 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
     text(summary, match + mismatch ? `${match} / ${match + mismatch} 个可判定结果` : working ? "" : empty); schedule.update(plan, favorite); card.heading.update(favorite);
     text(card.exceptions, `请求失败 ${records.filter(run => run.status === "error").length} · 中断 ${records.filter(run => run.status === "interrupted").length}`);
     const hourly = slots.length === 24 && slots.every((slot, index) => slot.label === `${String(index).padStart(2, "0")}:00`), now = Date.now();
-    bars.hidden = !slots.length; card.exceptions.hidden = !records.length; card.foot.hidden = !plan?.today && !records.length;
+    bars.dataset.empty = String(!slots.length); card.exceptions.dataset.empty = String(!records.length); card.foot.dataset.empty = String(!plan?.today && !records.length);
     for (const [key, entry] of card.slots) if (!slots.some(slot => slot.key === key)) { entry.bar.remove(); card.slots.delete(key); }
     for (const [index, slot] of slots.entries()) {
       let entry = card.slots.get(slot.key);
       if (!entry) {
-        const bar = button("", () => { if (entry.slot.run) return showRecord(entry.slot.run, bar); status(entry.slot.labelText, false, "note"); }, "candy-bar");
+        const bar = button("", () => { if (entry.slot.run) return openResultDetail(entry.slot.run.id, bar); status(entry.slot.labelText, false, "note"); }, "candy-bar");
+        bar.append(node("span", "candy-slot"));
         entry = { bar }; card.slots.set(slot.key, entry);
         bar.addEventListener("keydown", event => {
           if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
@@ -172,16 +182,11 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
     const latest = working || records.at(-1);
     text(date, plan?.today ? `${plan.today.date.slice(5)} · ${slots.length} 次` : ""); stateLabel.className = working ? "running-label" : "";
     text(stateLabel, working ? match + mismatch ? verdictLabel(working) : "" : plan && !plan.enabled ? "已暂停" : records.length ? `已结束 ${records.filter(run => !active(run)).length} / ${slots.length}` : "");
-    root.latestRunId = latest?.id; renderUsage(root.usage, latest); root.usage.hidden = !latest; root.dataset.available = String(favorite.available);
+    root.latestRunId = latest?.id; renderUsage(root.usage, latest); root.usage.dataset.empty = String(!latest); root.dataset.available = String(favorite.available);
   }
   function progress(id) {
     const run = runs.get(id); if (!run) return;
     if (isVisible()) for (const { root } of candyCards.values()) if (root.latestRunId === id) renderUsage(root.usage, run);
-    if (recordUsage?.id === id) {
-      renderUsage(recordUsage.strip, run);
-      recordUsage.live?.(run);
-      if (!active(run)) recordUsage.refresh?.();
-    }
   }
   function render() {
     if (!isVisible()) return;
@@ -255,7 +260,6 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
       }
       mount(ids, targets);
     }
-    if (recordUsage) progress(recordUsage.id);
     text($("favorite-page-info"), favorites.length ? `${favorites.length} 个模型 · ${page + 1} / ${pages}` : "");
     $("favorite-prev").disabled = page === 0; $("favorite-next").disabled = page >= pages - 1;
     requestAnimationFrame(updateGalleryButtons);
@@ -279,59 +283,46 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
     now.setAttribute("aria-pressed", String(rows.length > 0 && !hasEarlier && !hasNewer));
   }
 
-  async function showRecord(run, origin) {
-    const content = openDrawer("糖果结果", origin, "reading"), version = drawerVersion;
-    content.append(node("p", "help", "正在读取…"));
-    try {
-      const detail = await api(`api/runs/${run.id}`); if (version !== drawerVersion) return;
-      content.replaceChildren(); const headline = node("div", "record-headline");
-      const verdict = node("span"), answer = node("strong"); headline.append(answer, verdict); content.append(headline);
-      const provider = run.provider || (typeof run.model === "string" ? run.model.split("/")[0] : "未知供应商"), name = modelLabel({ id: run.model, name: run.modelName, provider, providerName: run.providerName }, false);
-      content.append(node("h3", "detail-name", name), node("p", "help", run.providerName || provider), node("p", "help", `${when(run.createdAt)} · ${run.effort || "默认档位"} · ${tokenLabel(run.maxTokens)}`));
-      const usage = makeUsage(), current = runs.get(run.id); recordUsage = { id: run.id, strip: usage, label: verdict };
-      content.append(usage);
-      const output = node("pre", "source-view record-source"); output.setAttribute("tabindex", "0"); content.append(output);
-      const failure = node("p", "form-error"); content.append(failure); let copyFallback = null;
-      const copy = action("复制回答", async copyVersion => {
-        try { await navigator.clipboard.writeText(detail.content || ""); if (copyVersion === drawerVersion) text(copy, "已复制"); }
-        catch {
-          if (copyVersion !== drawerVersion) return;
-          if (!copyFallback) { copyFallback = field("请手动复制", "textarea", ""); copyFallback.control.readOnly = true; content.append(copyFallback.row); }
-          copyFallback.control.value = detail.content || ""; copyFallback.control.focus(); copyFallback.control.select();
-        }
-      }); copy.refreshDisabled = () => { copy.disabled = !detail.content || pendingActions.has(copy); }; content.append(copy);
-      const info = node("details", "editor-details"); info.append(node("summary", "", "题面与运行参数"));
-      const metadata = node("p", "help"), reasoning = node("pre", "source-view"); reasoning.setAttribute("tabindex", "0");
-      info.append(node("pre", "candy-prompt", detail.prompt || ""), metadata, reasoning);
-      content.append(info);
-      const cancel = active(detail) ? action("取消本次", async cancelVersion => { updateRun(await post(`api/runs/${run.id}/cancel`, {})); if (cancelVersion === drawerVersion) closeDrawer(); render(); }, "danger") : null;
-      if (cancel) content.append(cancel);
-      const record = recordUsage; record.finished = !active(detail);
-      const paint = () => {
-        headline.dataset.verdict = verdictOf(detail); text(answer, detail.candy?.answer ?? "—"); text(verdict, verdictLabel(detail));
-        text(output, detail.content || (active(detail) ? "等待回答…" : "暂无回答")); text(failure, detail.error || ""); failure.hidden = !detail.error;
-        text(reasoning, detail.reasoning || ""); reasoning.hidden = !detail.reasoning;
-        text(metadata, `题目 ${detail.candy?.version || "—"} · 用量 ${detail.tokens?.total ?? detail.usage?.total_tokens ?? "未知"} Token\n${detail.promptHash || ""}`);
-        copy.refreshDisabled(); if (cancel) cancel.hidden = !active(detail);
-        const latest = runs.get(run.id); renderUsage(usage, (latest?.usageRevision || 0) > (detail.usageRevision || 0) ? latest : detail);
-      };
-      record.live = value => {
-        text(verdict, verdictLabel(value));
-        for (const key of ["content", "reasoning"]) if (typeof value[key] === "string" && value[key].length >= (detail[key]?.length || 0)) detail[key] = value[key];
-        text(output, detail.content || (active(value) ? "等待回答…" : "正在读取结果…")); text(reasoning, detail.reasoning || ""); reasoning.hidden = !detail.reasoning; copy.refreshDisabled();
-      };
-      record.refresh = async () => {
-        if (record.finished || record.loading) return; record.loading = true;
-        try {
-          const updated = await api(`api/runs/${run.id}`); if (version !== drawerVersion || recordUsage !== record) return;
-          Object.assign(detail, updated); record.finished = !active(updated);
-          paint();
-        } catch (error) { if (version === drawerVersion) status(error.message, true); }
-        finally { record.loading = false; }
-      };
-      paint(); if (current) { record.live(current); renderUsage(usage, (current.usageRevision || 0) > (detail.usageRevision || 0) ? current : detail); }
-      if (current && !active(current) && active(detail)) record.refresh();
-    } catch (error) { if (version === drawerVersion) { content.replaceChildren(action("重试读取", () => showRecord(run, origin))); status(error.message, true); } }
+  function showJSON(group, type, origin, dispose) {
+    const content = openDrawer("批次 JSON", origin, "reading", dispose), version = drawerVersion;
+    const source = node("textarea", "source-view export-source");
+    source.readOnly = true; source.spellcheck = false; source.setAttribute("aria-label", "批次 JSON 内容");
+    const retry = button("重试读取", () => read(true)); retry.hidden = true;
+    content.append(node("h3", "detail-name", `${group.date} · ${type}${group.source === "automatic" ? "每日批次" : "批次"}`),
+      node("p", "help", `${group.modelIds.length} 个模型 · ${group.runs.length} 份结果`), source, retry);
+    const copy = action("复制 JSON", async copyVersion => {
+      try {
+        await navigator.clipboard.writeText(source.value);
+        if (copyVersion === drawerVersion) status("已复制 JSON", true, "success");
+      } catch {
+        if (copyVersion !== drawerVersion) return;
+        source.focus({ preventScroll: true }); source.select(); status("请复制选中的 JSON", true, "note");
+      }
+    }, "primary");
+    const download = action("下载 JSON", async saveVersion => {
+      status("请选择 JSON 保存位置…", true, "note");
+      const result = group.source === "automatic" ? await post("api/batches/save", { runIds: group.runs.map(run => run.id) })
+        : await post(`api/batches/${encodeURIComponent(group.id)}/save`, {});
+      if (saveVersion === drawerVersion) status(result.cancelled ? "已取消保存" : `已保存 JSON · ${result.path}`, true, result.cancelled ? "note" : "success");
+    });
+    copy.disabled = download.disabled = true;
+    $("drawer-tools").append(copy);
+    $("drawer-footer").append(button("关闭 JSON", closeDrawer), download);
+    async function read(fromRetry = false) {
+      retry.hidden = source.hidden = true;
+      if (fromRetry) $("drawer-title").focus({ preventScroll: true });
+      status("正在准备导出…", true, "note");
+      try {
+        const body = group.source === "automatic" ? await post("api/batches/export", { runIds: group.runs.map(run => run.id) })
+          : await api(`api/batches/${encodeURIComponent(group.id)}/export`);
+        if (version !== drawerVersion) return;
+        source.value = JSON.stringify(body, null, 2); source.hidden = false; copy.disabled = download.disabled = false; status("", true);
+      } catch (error) {
+        if (version !== drawerVersion) return;
+        retry.hidden = false; status(error.message, true);
+      }
+    }
+    return read();
   }
 
   function addEditor() {
@@ -544,7 +535,7 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
       for (const id of ["favorite-add", "favorite-empty-add", "favorite-manage"]) $(id).disabled = !supported;
       if (!supported) status("重新开启插件以加载自动测试功能", false, "note"); render();
     },
-    render, refresh, closeDrawer, progress,
+    render, refresh, openDrawer, closeDrawer, progress, showJSON,
     resetAnimationPosition() {
       for (const row of animationRows.values()) row.scrolledKey = "";
     },

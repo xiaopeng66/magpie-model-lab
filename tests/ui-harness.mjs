@@ -61,7 +61,7 @@ class Element {
   async fire(type, details = {}) { for (const listener of [...(this.handlers[type] || []), this[`on${type}`]].filter(Boolean)) await listener({ preventDefault() {}, target: this, ...details }); }
 }
 
-export async function uiHarness({ bootstrap, detail, create, cleanup, open, openStorage, bank, accounts, exportBatch, favorites, writeClipboard, request, intersection = false, navigate = () => {}, search = "", viewport = { width: 1024, height: 768 }, token = "test-only-token", now = Date.now }) {
+export async function uiHarness({ bootstrap, detail, create, cleanup, open, openStorage, bank, accounts, exportBatch, saveBatch, favorites, writeClipboard, request, intersection = false, navigate = () => {}, search = "", viewport = { width: 1024, height: 768 }, token = "test-only-token", now = Date.now }) {
   const source = await readFile(new URL("../ui/favorites.js", import.meta.url), "utf8") + "\n" + (await readFile(new URL("../ui/app.js", import.meta.url), "utf8")).replace(/^import .*;\r?\n/gm, "");
   const html = await readFile(new URL("../ui/index.html", import.meta.url), "utf8");
   const elements = new Map([...html.matchAll(/<([a-z][\w:-]*)\b[^>]*\bid="([^"]+)"[^>]*>/gi)].map(match => {
@@ -77,10 +77,10 @@ export async function uiHarness({ bootstrap, detail, create, cleanup, open, open
   }
   for (const [name, value] of [["history-filter", ""], ["fp-api", "auto"], ["fp-tier", "default"]]) if (elements.has(name)) elements.get(name).value = value;
   const app = new Element("main"), document = { getElementById: (id) => elements.get(id), createElement: (tag) => Object.assign(new Element(tag), { ownerDocument: document }), createElementNS: (_namespace, tag) => Object.assign(new Element(tag), { ownerDocument: document }),
-    querySelector: selector => selector === "main.app" ? app : selector.includes("pelican-token") ? { content: token } : null, documentElement: new Element("html"), activeElement: null };
+    querySelector: selector => selector === "main.app" ? app : selector.includes("pelican-token") ? { content: token } : selector === '.view-tab[aria-selected="true"]'
+      ? [...elements].find(([id, element]) => id.endsWith("-tab") && element.getAttribute("aria-selected") === "true")?.[1] : null, documentElement: new Element("html"), activeElement: null };
   for (const element of [app, document.documentElement, ...elements.values()]) { element.ownerDocument = document; element._connected = true; }
-  elements.get("favorite-drawer").append(...["drawer-backdrop", "drawer-back", "drawer-title", "drawer-close", "drawer-content", "drawer-status", "drawer-footer"].map(id => elements.get(id)));
-  elements.get("export-panel").append(elements.get("export-close"));
+  elements.get("favorite-drawer").append(...["drawer-backdrop", "drawer-back", "drawer-title", "drawer-tools", "drawer-close", "drawer-content", "drawer-status", "drawer-footer"].map(id => elements.get(id)));
   const tabs = new Element(), window = { scrollY: 0, scrollTo({ top }) { this.scrollY = top; }, scrollBy({ top }) { this.scrollY += top; } };
   app.append(tabs); tabs.append(...["current", "fingerprint", "candy", "favorites", "history"].map(name => elements.get(`${name}-tab`)));
   let controller;
@@ -97,6 +97,8 @@ export async function uiHarness({ bootstrap, detail, create, cleanup, open, open
     if (path === "api/fingerprint/accounts") return Response.json({ accounts: await accounts() });
     if (path.startsWith("api/favorites") || path.startsWith("api/schedules")) return Response.json(await (favorites ? favorites(path, options.body ? JSON.parse(options.body) : undefined) : bootstrap.favorites));
     if (/^api\/batches\/[^/]+\/export$/.test(path)) return Response.json(await exportBatch(path.split("/")[2]));
+    if (path === 'api/batches/export' && options.method === 'POST') return Response.json(await exportBatch(JSON.parse(options.body)));
+    if ((/^api\/batches\/[^/]+\/save$/.test(path) || path === 'api/batches/save') && options.method === 'POST') return Response.json(await saveBatch(path, JSON.parse(options.body)));
     if (/^api\/runs\/[^/]+\/open$/.test(path) && options.method === "POST") return Response.json(await open(path.split("/")[2]));
     if (path.startsWith("api/runs/")) return Response.json(await detail(path.split("/")[2]));
     throw new Error("Unexpected UI request: " + path);

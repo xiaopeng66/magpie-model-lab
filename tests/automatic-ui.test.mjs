@@ -265,8 +265,14 @@ test("an open automatic candy record updates answer and copy text when generatio
   let detail = { ...run, content: "", candy: { answer: null, verdict: "incomplete" } };
   const ui = await uiHarness({ bootstrap: boot, detail: () => structuredClone(detail) }); await open(ui);
   await buttons(ui, ui.elements.get("favorite-candy-grid")).find(e => e.className === "candy-bar").fire("click");
-  const copy = buttons(ui, drawer(ui)).find(e => e.textContent === "复制回答"); copy.focus();
-  detail = { ...run, status: "completed", content: "最终答案：21", candy: { answer: 21, verdict: "match" } };
+  assert.ok(buttons(ui, drawer(ui)).some(e => e.textContent === "完整回答"));
+  const copy = buttons(ui, ui.elements.get("drawer-tools")).find(e => e.textContent === "复制回答"); copy.focus();
+  detail = { ...run, status: "completed", content: "最终答案：21", reasoning: "核对每种形状", prompt: "测试题", candy: { answer: 21, verdict: "match" } };
   ui.event("run", { run: detail }); await waitFor(() => find(ui, drawer(ui), "最终答案：21"));
   assert.ok(find(ui, drawer(ui), "21")); assert.ok(copy.focused); await copy.fire("click"); assert.equal(ui.copied.at(-1), "最终答案：21");
+  await buttons(ui, drawer(ui)).find(e => e.textContent === "思考").fire("click");
+  assert.ok(find(ui, drawer(ui), "核对每种形状"));
+  await copy.fire("click"); assert.equal(ui.copied.at(-1), "核对每种形状");
+  await buttons(ui, drawer(ui)).find(e => e.textContent === "参数").fire("click");
+  assert.ok(ui.descendants(drawer(ui), "pre").some(e => e.textContent.includes("测试题")));
 });

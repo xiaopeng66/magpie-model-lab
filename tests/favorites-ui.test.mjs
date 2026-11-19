@@ -93,7 +93,7 @@ test("canceling a slot from its detail drawer does not cancel another model", as
   await ui.elements.get("favorites-tab").fire("click");
   const bar = ui.descendants(ui.elements.get("favorite-candy-grid"), "button").find(e => e.className === "candy-bar");
   await bar.fire("click");
-  const cancel = ui.descendants(ui.elements.get("drawer-content"), "button").find(e => e.textContent === "取消本次");
+  const cancel = ui.descendants(ui.elements.get("drawer-footer"), "button").find(e => e.textContent === "取消本次");
   assert.ok(cancel); await cancel.fire("click"); assert.ok(calls.every(id => id === working[0].id));
 });
 

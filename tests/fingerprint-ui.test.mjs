@@ -15,6 +15,20 @@ const details = id => id === animationId ? { ...animation, html: FIXTURE_HTML, p
   samples: [0, 1, 2].map(() => ({ state: "complete", text: "17, 300, 29", raw_text: "17, 300, 29", count: 300, expected_count: 300, provenance: { verified: false } })), bank: { builtAt: "fixture-bank", sha256: "a".repeat(64), sdkVersion: "0.2.0" } };
 const buttons = (ui, container) => ui.descendants(ui.elements.get(container), "button");
 const exportControl = (ui, batchId) => buttons(ui, "history-list").find(item => item.dataset.icon === "export" && item.parent.parent.dataset.batchId === batchId);
+const exportSource = ui => ui.descendants(ui.elements.get("drawer-content"), "textarea")[0];
+const exportCopy = ui => buttons(ui, "drawer-tools").find(item => item.textContent === "复制 JSON");
+
+test("long fingerprint candidates and families remain available on hover and update with new results", async () => {
+  const prediction = "Very long reference model candidate with a full experimental version", family = "Very long model family name";
+  const saved = { ...fingerprint, fingerprint: { ...fingerprint.fingerprint, prediction, family } };
+  const ui = await uiHarness({ bootstrap: boot([saved]), detail: details });
+  const candidate = await waitFor(() => ui.descendants(ui.elements.get("fingerprint-results")).find(item => item.className === "fingerprint-prediction"));
+  const familyName = ui.descendants(ui.elements.get("fingerprint-results")).find(item => item.className === "fingerprint-family");
+  assert.equal(candidate.title, prediction); assert.equal(familyName.title, family);
+  ui.event("run", { run: { ...saved, revision: 6, fingerprint: { ...saved.fingerprint, prediction: "New candidate", family: "New family" } } });
+  await waitFor(() => candidate.textContent === "New candidate");
+  assert.equal(candidate.title, "New candidate"); assert.equal(familyName.title, "New family");
+});
 
 test("each mode preserves its concurrency while history disables generation", async () => {
   const requests = [];
@@ -113,72 +127,80 @@ test("clear selection removes picks, efforts and fixed accounts across providers
   await ui.elements.get("generate").fire("click"); assert.equal(sent[0].models[0].effort, ""); assert.equal(sent[0].models[0].account, undefined);
 });
 
-test("export stays compact until requested and clipboard denial reveals selectable evidence", async () => {
-  const ui = await uiHarness({ bootstrap: boot([fingerprint]), detail: details,
+test("history export opens the shared reader and clipboard denial selects its JSON", async () => {
+  const ui = await uiHarness({ bootstrap: boot([fingerprint]), detail: details, search: "?view=history",
     exportBatch: () => ({ batchId: fingerprintId, kind: "fingerprint", runs: [details(fingerprintId)] }),
     writeClipboard: async () => { throw new Error("Clipboard unavailable"); } });
-  await waitFor(() => exportControl(ui, fingerprintId)); await exportControl(ui, fingerprintId).fire("click");
-  assert.equal(ui.elements.get("export-preview")?.hidden, true);
-  await ui.elements.get("export-toggle").fire("click"); assert.equal(ui.elements.get("export-preview").hidden, false);
-  await ui.elements.get("export-toggle").fire("click"); assert.equal(ui.elements.get("export-preview").hidden, true);
-  await ui.elements.get("export-copy").fire("click");
-  const output = ui.elements.get("export-json");
-  assert.equal(ui.elements.get("export-preview").hidden, false); assert.equal(output.focused, true);
+  const control = await waitFor(() => exportControl(ui, fingerprintId));
+  ui.elements.get("history-scroll").scrollTop = 46;
+  await control.fire("click");
+  assert.equal(ui.elements.get("favorite-drawer").hidden, false);
+  assert.equal(ui.elements.get("favorite-drawer").dataset.mode, "reading");
+  assert.ok(exportSource(ui).readOnly);
+  await exportCopy(ui).fire("click");
+  const output = exportSource(ui);
+  assert.equal(ui.document.activeElement, output);
   assert.equal(output.selectionStart, 0); assert.equal(output.selectionEnd, output.value.length);
   assert.equal(JSON.parse(output.value).batchId, fingerprintId);
-  await ui.elements.get("export-close").fire("click");
-  assert.equal(output.value, ""); assert.equal(exportControl(ui, fingerprintId).focused, true);
+  assert.equal(ui.elements.get("drawer-status").dataset.tone, "note");
+  await ui.elements.get("favorite-drawer").fire("keydown", { key: "Escape" });
+  assert.equal(exportSource(ui), undefined); assert.equal(ui.document.activeElement, control);
+  assert.equal(ui.elements.get("history-scroll").scrollTop, 46);
 });
 
 test("a late export cannot overwrite the more recently requested batch", async t => {
   const replies = new Map();
-  const ui = await uiHarness({ bootstrap: boot([animation, fingerprint]), detail: details,
+  const ui = await uiHarness({ bootstrap: boot([animation, fingerprint]), detail: details, search: "?view=history",
     exportBatch: batchId => new Promise(resolve => replies.set(batchId, () => resolve({ batchId, runs: [details(batchId)] }))) });
   t.after(() => { for (const reply of replies.values()) reply(); });
   await waitFor(() => exportControl(ui, animationId));
   const first = exportControl(ui, animationId).fire("click"); await waitFor(() => replies.has(animationId));
+  await ui.elements.get("drawer-close").fire("click");
   const second = exportControl(ui, fingerprintId).fire("click"); await waitFor(() => replies.has(fingerprintId));
   replies.get(fingerprintId)(); await second; replies.get(animationId)(); await first;
-  assert.equal(JSON.parse(ui.elements.get("export-json").value).batchId, fingerprintId);
+  assert.equal(JSON.parse(exportSource(ui).value).batchId, fingerprintId);
 });
 
-test("closing a pending export prevents it reopening and history refresh preserves its busy control", async t => {
+test("closing a pending export restores its opener and late data stays closed", async t => {
   let release;
   const reply = new Promise(resolve => { release = () => resolve({ batchId: fingerprintId, runs: [details(fingerprintId)] }); });
   t.after(release);
-  const ui = await uiHarness({ bootstrap: boot([fingerprint]), detail: details, exportBatch: () => reply });
+  const ui = await uiHarness({ bootstrap: boot([fingerprint]), detail: details, exportBatch: () => reply, search: "?view=history" });
   await waitFor(() => exportControl(ui, fingerprintId));
   const control = exportControl(ui, fingerprintId), pending = control.fire("click");
-  await ui.elements.get("history-filter").fire("change"); assert.equal(control.disabled, true);
-  await ui.elements.get("export-close").fire("click"); assert.equal(ui.elements.get("history-tab").focused, true); release(); await pending;
-  assert.equal(ui.elements.get("export-panel").hidden, true); assert.equal(ui.elements.get("export-json").value, "");
+  await ui.elements.get("history-filter").fire("change"); assert.equal(exportCopy(ui).disabled, true);
+  await ui.elements.get("drawer-close").fire("click"); assert.equal(ui.document.activeElement, control); release(); await pending;
+  assert.equal(ui.elements.get("favorite-drawer").hidden, true); assert.equal(exportSource(ui), undefined);
 });
 
 test("export failure offers a retry and delayed clipboard failure cannot change a newer export", async t => {
   let attempts = 0, failCopy;
   const pendingCopy = new Promise((_resolve, reject) => { failCopy = () => reject(new Error("Clipboard unavailable")); });
   t.after(failCopy);
-  const ui = await uiHarness({ bootstrap: boot([animation, fingerprint]), detail: details, writeClipboard: () => pendingCopy,
+  const ui = await uiHarness({ bootstrap: boot([animation, fingerprint]), detail: details, search: "?view=history", writeClipboard: () => pendingCopy,
     exportBatch: batchId => { if (++attempts === 1) throw new Error("Temporary read failure"); return { batchId, runs: [details(batchId)] }; } });
   await waitFor(() => exportControl(ui, fingerprintId));
   await exportControl(ui, fingerprintId).fire("click");
-  assert.equal(ui.elements.get("export-copy").disabled, true); assert.equal(exportControl(ui, fingerprintId).disabled, false);
-  assert.match(ui.elements.get("export-status").textContent, /Temporary read failure/);
-  await exportControl(ui, fingerprintId).fire("click"); assert.equal(ui.elements.get("export-status").hidden, true);
-  const copying = ui.elements.get("export-copy").fire("click");
+  assert.equal(exportCopy(ui).disabled, true);
+  assert.match(ui.elements.get("drawer-status").textContent, /Temporary read failure/);
+  assert.equal(ui.elements.get("drawer-status").dataset.tone, "error");
+  await buttons(ui, "drawer-content").find(item => item.textContent === "重试读取").fire("click");
+  assert.equal(ui.elements.get("drawer-status").hidden, true);
+  const copying = exportCopy(ui).fire("click");
+  await ui.elements.get("drawer-close").fire("click");
   await exportControl(ui, animationId).fire("click"); failCopy(); await copying;
-  assert.equal(JSON.parse(ui.elements.get("export-json").value).batchId, animationId);
-  assert.equal(ui.elements.get("export-preview").hidden, true); assert.equal(ui.elements.get("export-status").hidden, true);
-  assert.equal(ui.elements.get("export-copy").disabled, false);
+  assert.equal(JSON.parse(exportSource(ui).value).batchId, animationId);
+  assert.equal(ui.elements.get("drawer-status").hidden, true);
+  assert.equal(exportCopy(ui).disabled, false);
 });
 
 test("deleting an exported batch clears its displayed evidence and disables copying", async () => {
-  const ui = await uiHarness({ bootstrap: boot([fingerprint]), detail: details,
+  const ui = await uiHarness({ bootstrap: boot([fingerprint]), detail: details, search: "?view=history",
     exportBatch: () => ({ batchId: fingerprintId, runs: [details(fingerprintId)] }) });
   await waitFor(() => exportControl(ui, fingerprintId)); await exportControl(ui, fingerprintId).fire("click");
   ui.event("removed", { ids: [fingerprintId] }); await waitFor(() => ui.elements.get("history-count").textContent === "0 批");
-  assert.equal(ui.elements.get("export-panel").hidden, true); assert.equal(ui.elements.get("export-json").value, "");
-  assert.equal(ui.elements.get("export-copy").disabled, true); await ui.elements.get("export-copy").fire("click");
+  assert.equal(ui.elements.get("favorite-drawer").hidden, true); assert.equal(exportSource(ui), undefined);
+  assert.equal(exportCopy(ui), undefined);
   assert.equal(ui.copied.length, 0);
 });
 
@@ -215,10 +237,10 @@ test("reopening fingerprint details retries a failed read without resampling", a
   await waitFor(() => buttons(ui, "fingerprint-results").length);
   const disclose = buttons(ui, "fingerprint-results").find(item => item.attributes["aria-label"] === "指纹详情");
   await disclose.fire("click");
-  await waitFor(() => ui.descendants(ui.elements.get("fingerprint-results")).some(item => item.textContent === "Temporary read failure"));
+  await waitFor(() => ui.descendants(ui.elements.get("drawer-content")).some(item => item.textContent === "Temporary read failure"));
   assert.equal(reads, 1, "A failed read must wait for the user to retry");
-  await disclose.fire("click"); await disclose.fire("click");
-  await waitFor(() => ui.descendants(ui.elements.get("fingerprint-results")).some(item => item.textContent.includes("17, 300, 29")));
+  await ui.elements.get("drawer-close").fire("click"); await disclose.fire("click");
+  await waitFor(() => ui.descendants(ui.elements.get("drawer-content")).some(item => item.textContent.includes("17, 300, 29")));
   assert.equal(reads, 2);
 });
 
@@ -261,14 +283,16 @@ test("fingerprint cards reveal evidence on demand and history supports mode filt
   await ui.elements.get("fingerprint-tab").fire("click");
   assert.equal(reads.includes(fingerprintId), false, "Overview already has the ranking and must not load raw samples");
   const disclose = buttons(ui, "fingerprint-results").find(item => item.attributes["aria-label"] === "指纹详情"); assert.ok(disclose); await disclose.fire("click");
-  await waitFor(() => ui.descendants(ui.elements.get("fingerprint-results")).some(item => item.textContent.includes("17, 300, 29")));
+  await waitFor(() => ui.descendants(ui.elements.get("drawer-content")).some(item => item.textContent.includes("17, 300, 29")));
   assert.ok(reads.includes(fingerprintId));
+  await ui.elements.get("drawer-close").fire("click");
   const filter = ui.elements.get("history-filter"); assert.ok(filter); filter.value = "fingerprint"; await filter.fire("change");
   const rows = buttons(ui, "history-list").filter(item => item.className === "history-row"); assert.equal(rows.length, 1); await rows[0].fire("click");
   const exportButton = buttons(ui, "history-list").find(item => item.attributes["aria-label"]?.startsWith("导出")); assert.ok(exportButton); await exportButton.fire("click");
-  assert.deepEqual(exports, [fingerprintId]); assert.equal(ui.elements.get("export-panel").hidden, false);
-  assert.equal(JSON.parse(ui.elements.get("export-json").value).batchId, fingerprintId);
-  await ui.elements.get("export-copy").fire("click"); assert.equal(JSON.parse(ui.copied[0]).kind, "fingerprint");
+  assert.deepEqual(exports, [fingerprintId]); assert.equal(ui.elements.get("favorite-drawer").hidden, false);
+  assert.equal(JSON.parse(exportSource(ui).value).batchId, fingerprintId);
+  await exportCopy(ui).fire("click"); assert.equal(JSON.parse(ui.copied[0]).kind, "fingerprint");
+  assert.equal(ui.elements.get("drawer-status").dataset.tone, "success");
   assert.equal(ui.descendants(ui.elements.get("history-results"), "iframe").length, 0);
 });
 

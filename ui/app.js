@@ -10,6 +10,7 @@ import { renderDailyHistory } from './history-preview.mjs';
   const historyDays = new Map(), runningItems = new Map();
   let historyGroups = new Map(), historyKeys = new Map(), dailyPreview = null, historyTimeZone;
   let historyPosition = null, historyScrollFrame = null;
+  let resultDetail = null;
   const views = {
     current: { batchId: "", ids: [], recentIds: [], results: "results", scroll: "preview-scroll", note: "batch-note", empty: "empty-state", cancel: "cancel-all" },
     fingerprint: { batchId: "", ids: [], recentIds: [], results: "fingerprint-results", scroll: "fingerprint-scroll", note: "fingerprint-note", empty: "fingerprint-empty", cancel: "fingerprint-cancel" },
@@ -21,13 +22,15 @@ import { renderDailyHistory } from './history-preview.mjs';
   const active = (run) => ["queued", "running"].includes(run.status);
   let defaults = "", activeView = "current", batchCleanup = false, openDataDir = false, cleaning = false, streaming = false, reconnecting = false, renderFrame = null;
   let executionView = "current", creating = false, addingFavorites = false, fingerprintAvailable = false, batchCancel = false, batchExport = false, bankUpdating = false, cachedAccounts = [], accountsLoaded = false, accountsLoading = false;
-  const concurrencyDrafts = { current: "2", fingerprint: "3", candy: "3" }, exporting = new Set();
+  const concurrencyDrafts = { current: "2", fingerprint: "3", candy: "3" };
   const tokenLabel = value => value === 0 ? "不设输出上限" : `${value ?? 64000} Token`;
   const concurrencyLabel = run => run.concurrency === 0 ? "不设并行上限" : `并行 ${run.concurrency ?? (run.kind === "fingerprint" || run.kind === "candy" ? 3 : 2)}`;
   const kindLabel = kind => ({ pelican: "动画", fingerprint: "指纹", candy: "糖果" })[kind || "pelican"];
+  const candyVerdict = run => run.status === "completed" ? run.candy?.verdict || "review" : "incomplete";
+  const candyVerdictLabel = run => ({ match: "答案匹配", mismatch: "答案不符", review: "待复核", incomplete: ({ error: "请求失败", cancelled: "已取消", interrupted: "已中断", truncated: "已截断" })[run.status] || "未完成" })[candyVerdict(run)];
   let favoritesAvailable = false, candyAvailable = false;
   let initialized = false, bootstrapping = false;
-  let exportedBatch = "", exportVersion = 0, exportOpener = null, confirmPending = null;
+  let exportedBatch = "", confirmPending = null;
   let connectionNotice = "";
   const query = new URLSearchParams(location.search);
   let dark = query.get("theme") ? query.get("theme") === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
@@ -174,7 +177,12 @@ import { renderDailyHistory } from './history-preview.mjs';
       const select = document.createElement("select"); select.setAttribute("aria-label", `${modelLabel(model, true)} 的思考档位`);
       for (const level of ["", ...model.efforts]) { const option = node("option", "", level || "默认"); option.value = level; select.append(option); }
       select.value = effort; select.addEventListener("change", () => selected.set(id, select.value));
-      const remove = iconButton("close", `移除 ${id}`, () => { selected.delete(id); selectedAccounts.delete(id); renderSelected(); renderModels(); });
+      const remove = iconButton("close", `移除 ${id}`, () => {
+        const position = [...selected.keys()].indexOf(id);
+        selected.delete(id); selectedAccounts.delete(id); renderSelected(); renderModels();
+        const remaining = [...container.querySelectorAll('.icon-button')];
+        (remaining[Math.min(position, remaining.length - 1)] || $('model-search')).focus({ preventScroll: true });
+      });
       row.append(select, remove); container.append(row);
       if (executionView === "fingerprint" && $("fp-pin").checked) {
         const accountRow = node("div", "account-row"), account = node("input"), datalist = node("datalist");
@@ -225,10 +233,10 @@ import { renderDailyHistory } from './history-preview.mjs';
       selectedBatch = views.history.ids.map(id => historyKeys.get(id)).find(id => batches.has(id));
       if (!selectedBatch) clearHistorySelection(false);
     }
-    if (exportedBatch && !batches.has(exportedBatch)) closeExport();
     text($("history-count"), `${all.length} 批`);
     const container = $("history-list");
     for (const [id, item] of historyItems) if (!batches.has(id)) { item.root.remove(); historyItems.delete(id); }
+    if (exportedBatch && !batches.has(exportedBatch)) favoritesUI.closeDrawer();
     if (batches.size) container.querySelector('.history-list-empty')?.remove();
     const dayCounts = new Map();
     for (const group of batches.values()) dayCounts.set(group.date, (dayCounts.get(group.date) || 0) + 1);
@@ -275,8 +283,7 @@ import { renderDailyHistory } from './history-preview.mjs';
       remove.setAttribute("aria-label", `删除 ${batchTitle}及 ${members.length} 份结果文件`);
       remove.disabled = !batchCleanup || unfinished > 0 || deleting.has(batchId) || cleaning;
       remove.title = !batchCleanup ? "重新开启插件后可删除单批记录" : unfinished ? "本批任务结束后可删除" : "删除本批记录和生成文件";
-      item.exportButton.hidden = !batchExport; item.exportButton.disabled = unfinished > 0 || exporting.has(batchId) || deleting.has(batchId) || cleaning;
-      item.exportButton.setAttribute("aria-busy", String(exporting.has(batchId)));
+      item.exportButton.hidden = !batchExport; item.exportButton.disabled = unfinished > 0 || deleting.has(batchId) || cleaning;
       item.exportButton.setAttribute("aria-label", `导出 ${batchTitle}：${modelNames.join('、')} JSON`); item.exportButton.title = item.exportButton.getAttribute('aria-label');
       const index = dayIndices.get(group.date); if (day.list.children[index] !== root) day.list.insertBefore(root, day.list.children[index] || null); dayIndices.set(group.date, index + 1);
     }
@@ -293,39 +300,12 @@ import { renderDailyHistory } from './history-preview.mjs';
 
   function historyNotice(text, failed = false) { $("history-status").textContent = text; $("history-status").hidden = !text; $("history-status").dataset.error = String(failed); }
 
-  function exportStatus(value, failed = false) { text($("export-status"), value); $("export-status").hidden = !value; $("export-status").dataset.error = String(failed); }
-
-  function toggleExport(expanded) {
-    $("export-preview").hidden = !expanded; $("export-toggle").setAttribute("aria-expanded", String(expanded));
-    text($("export-toggle"), expanded ? "收起 JSON" : "查看 JSON");
-  }
-
-  function closeExport(focus = false) {
-    const returnFocus = exportOpener?.isConnected && !exportOpener.disabled ? exportOpener : $("history-tab");
-    exportVersion++; exportedBatch = ""; exportOpener = null;
-    if ($("export-panel").open) $("export-panel").close();
-    $("export-panel").hidden = true; $("export-json").value = ""; text($("export-summary"), "");
-    $("export-copy").disabled = true; $("export-toggle").disabled = true; $("export-download").disabled = true; toggleExport(false); exportStatus("");
-    if (focus) returnFocus.focus({ preventScroll: true });
-  }
-
-  async function exportHistory(batchId) {
-    if (!batchExport) return;
+  function exportHistory(batchId) {
+    if (!batchExport || exportedBatch) return;
     const item = historyItems.get(batchId), group = historyGroups.get(batchId); if (!group || !item || item.exportButton.disabled) return;
-    closeExport(); const version = exportVersion; exportedBatch = batchId; exportOpener = item.exportButton;
-    exporting.add(batchId); renderHistory();
-    const members = group.runs;
-    text($("export-summary"), `${[...new Set(members.map(run => kindLabel(run.kind)))].join(" / ")} · ${members.length} 份结果 · ${group.date}`);
-    $("export-panel").hidden = false; $("export-panel").showModal(); exportStatus("正在准备导出…");
-    try {
-      const body = group.source === "automatic" ? await api("api/batches/export", { method: "POST", body: JSON.stringify({ runIds: members.map(run => run.id) }) })
-        : await api(`api/batches/${batchId}/export`);
-      if (version !== exportVersion) return;
-      $("export-json").value = JSON.stringify(body, null, 2); exportStatus("");
-      $("export-copy").disabled = $("export-toggle").disabled = $("export-download").disabled = false;
-      if (document.activeElement === $("export-close")) $("export-copy").focus({ preventScroll: true });
-    } catch (err) { if (version === exportVersion) exportStatus(err.message, true); }
-    finally { exporting.delete(batchId); renderHistory(); }
+    exportedBatch = batchId;
+    const type = [...new Set(group.runs.map(run => kindLabel(run.kind)))].join(" / ");
+    return favoritesUI.showJSON(group, type, item.exportButton, () => { exportedBatch = ""; });
   }
 
   function confirmAction(title, message, label) {
@@ -360,6 +340,7 @@ import { renderDailyHistory } from './history-preview.mjs';
 
   function setView(name) {
     closeCalendar();
+    if ((resultDetail || exportedBatch) && name !== activeView) favoritesUI.closeDrawer();
     const returningToFavorites = name === "favorites" && activeView !== "favorites";
     if (returningToFavorites) favoritesUI.resetAnimationPosition();
     activeView = name;
@@ -380,7 +361,6 @@ import { renderDailyHistory } from './history-preview.mjs';
     }
     $("setup-sidebar").hidden = ["history", "favorites"].includes(name); $("workspace").dataset.wide = String($("setup-sidebar").hidden);
     if (name !== "favorites") favoritesUI.closeDrawer(); else { favoritesUI.render(); favoritesUI.refresh(); }
-    if (name !== "history" && exportedBatch) closeExport();
     updateSettings();
     for (const card of [...cards.values()]) { renderCard(card.id, card.view); if (card.view === name) fitPreview(card); }
     renderRunningBatches();
@@ -390,11 +370,11 @@ import { renderDailyHistory } from './history-preview.mjs';
   function updateSettings() {
     const fingerprint = executionView === "fingerprint";
     const candy = executionView === "candy";
+    const generate = $("generate");
     $("animation-settings").hidden = fingerprint || candy; $("fingerprint-settings").hidden = !fingerprint; $("fp-options").hidden = !fingerprint; $("candy-settings").hidden = !candy;
     text($("test-mode-label"), candy ? "糖果测试" : fingerprint ? "模型指纹" : "鹈鹕动画");
-    $("generate").disabled = !initialized || ["history", "favorites"].includes(activeView) || creating || (fingerprint && !fingerprintAvailable) || (candy && !candyAvailable);
-    $("generate").hidden = activeView === "favorites";
-    $("generate").title = activeView === "history" ? "切换到测试页后开始测试" : "";
+    generate.hidden = ["history", "favorites"].includes(activeView);
+    generate.disabled = generate.hidden || !initialized || creating || (fingerprint && !fingerprintAvailable) || (candy && !candyAvailable);
     text($("generate-label"), creating ? "创建中…" : candy ? "开始测试" : fingerprint ? "开始检测" : "开始生成");
     $("fingerprint-unavailable").hidden = fingerprintAvailable;
     $("bank-refresh").disabled = !fingerprintAvailable || bankUpdating;
@@ -447,6 +427,7 @@ import { renderDailyHistory } from './history-preview.mjs';
     const ids = groups.flatMap(group => group.runs.map(run => run.id));
     for (const id of view.recentIds) if (!ids.includes(id) && !view.ids.includes(id)) removeCard(id, name);
     view.recentIds = ids; container.hidden = !groups.length;
+    $(`${name}-history-footer`).hidden = !view.ids.length && !groups.length;
     for (const [id, entry] of items) if (!groups.some(group => group.id === id)) { entry.root.remove(); items.delete(id); }
     for (const [index, group] of groups.entries()) {
       let entry = items.get(group.id);
@@ -469,6 +450,7 @@ import { renderDailyHistory } from './history-preview.mjs';
   function renderShown(id) {
     pendingRenders.delete(id);
     for (const [name, view] of Object.entries(views)) if (view.ids.includes(id) || view.recentIds?.includes(id)) renderCard(id, name);
+    if (resultDetail?.id === id) renderResultDetail();
     favoritesUI.progress(id);
   }
 
@@ -508,7 +490,8 @@ import { renderDailyHistory } from './history-preview.mjs';
   }
 
   function removeRuns(ids) {
-    if (exportedBatch && ids.some(id => historyKeys.get(id) === exportedBatch)) closeExport();
+    const affectsExport = exportedBatch && ids.some(id => historyKeys.get(id) === exportedBatch);
+    if (resultDetail && ids.includes(resultDetail.id)) favoritesUI.closeDrawer();
     for (const id of ids) { removed.add(id); runs.delete(id); pendingRenders.delete(id); }
     for (const [name, view] of Object.entries(views)) {
       for (const id of ids) removeCard(id, name);
@@ -518,6 +501,7 @@ import { renderDailyHistory } from './history-preview.mjs';
       refreshView(name);
     }
     renderHistory(); favoritesUI.render();
+    if (affectsExport && exportedBatch) favoritesUI.closeDrawer();
     if (ids.length) favoritesUI.refresh();
   }
 
@@ -525,6 +509,7 @@ import { renderDailyHistory } from './history-preview.mjs';
     const view = views.history, position = historyPosition;
     historyPosition = null; cancelAnimationFrame(historyScrollFrame); historyScrollFrame = null;
     for (const id of view.ids) removeCard(id, 'history');
+    dailyPreview?.dispose?.();
     view.ids = []; view.batchId = ''; view.visibleIds = null; dailyPreview = null;
     $(view.results).replaceChildren(); refreshView('history');
     if (updateList) renderHistory();
@@ -534,6 +519,17 @@ import { renderDailyHistory } from './history-preview.mjs';
       $('history-scroll').scrollTop = position.list;
       if (activeView === 'history') window.scrollTo({ top: position.page, behavior: 'instant' });
     });
+  }
+
+  function openManualHistory(name) {
+    $('history-filter').value = name === 'current' ? 'pelican' : name;
+    $('history-source').value = 'manual';
+    historyPosition = null;
+    clearHistorySelection(false);
+    renderHistory(); setView('history');
+    $('history-scroll').scrollTop = 0;
+    window.scrollTo({ top: 0, behavior: 'instant' });
+    $('history-filter').focus({ preventScroll: true });
   }
 
   function revealHistoryRow(batchId) {
@@ -581,7 +577,10 @@ import { renderDailyHistory } from './history-preview.mjs';
     refreshView(name);
     if (name === 'history') {
       results.dataset.layout = daily ? `daily-${group.kind}` : 'runs';
-      if (reset) dailyPreview = daily ? renderDailyHistory(group, results, { node, text, button, modelLabel, active, timeZone: historyTimeZone, mount: mountHistoryRuns }) : null;
+      if (reset) {
+        dailyPreview?.dispose?.();
+        dailyPreview = daily ? renderDailyHistory(group, results, { node, text, button, modelLabel, active, timeZone: historyTimeZone, mount: mountHistoryRuns }) : null;
+      }
       if (!daily) for (const id of ids) renderCard(id, name);
       if (updateList) renderHistory();
       if (selectionChanged) revealHistoryRow(batchId);
@@ -599,15 +598,11 @@ import { renderDailyHistory } from './history-preview.mjs';
     const root = node("article", "result-card"); root.dataset.runId = id;
     const header = node("div", "card-header"), model = node("div", "card-model");
     const title = node("h3"), provider = node("p", "card-provider"), badge = node("span", "badge"); model.append(title, provider); header.append(model);
-    const card = { id, view, root, title, provider, badge, mode: "html", frame: null, stopped: false, reloading: false, opening: false, cancelling: false, previewError: "", width: 960, height: 600 };
-    const controls = node("div", "card-actions"), tabs = node("div", "tab-buttons");
-    card.detail = node("div", "card-detail"); card.detail.id = `detail-${view}-${id}`; card.detail.hidden = true;
-    const source = button("HTML", () => setMode(card, "html"));
-    const original = button("原文", () => setMode(card, "content")); original.setAttribute("aria-label", "原始输出");
-    tabs.append(source, original); card.tabs = { html: source, content: original };
+    const card = { id, view, root, title, provider, badge, frame: null, stopped: false, reloading: false, opening: false, cancelling: false, previewError: "", width: 960, height: 600 };
+    const controls = node("div", "card-actions");
     card.play = iconButton("pause", "停止预览", () => {
       if (card.stopped) return replay(card);
-      card.stopped = true; if (card.frame) { card.frame.remove(); card.frame = null; } renderCard(id, view);
+      card.stopped = true; renderShown(id);
     });
     card.restart = iconButton("replay", "重播", () => replay(card));
     card.open = iconButton("external", "在浏览器打开", async () => {
@@ -624,19 +619,19 @@ import { renderDailyHistory } from './history-preview.mjs';
       catch (err) { notice(err.message); }
       finally { card.cancelling = false; renderCard(id, view); }
     });
-    card.disclose = iconButton("code", "源码与详情", () => toggleDetail(card));
-    card.disclose.setAttribute("aria-controls", card.detail.id); card.disclose.setAttribute("aria-expanded", "false");
-    controls.append(card.restart, card.open, card.cancel, card.disclose); tabs.append(card.play);
+    card.disclose = detailButton(card, "源码与详情");
+    controls.append(card.restart, card.open, card.cancel, card.disclose);
     card.zone = node("div", "preview-zone"); card.placeholder = node("div", "preview-placeholder"); card.zone.append(card.placeholder);
     previewCards.set(card.zone, card);
     card.inViewport = !visibilityObserver; visibilityObserver?.observe(card.zone);
-    card.source = node("pre", "source-view"); card.source.setAttribute("tabindex", "0");
-    const stats = makeStats(card, "首次正文"); card.usage = makeUsage();
-    card.message = node("p", "card-message"); card.message.hidden = true; card.zone.append(card.message);
-    const files = node("div", "card-file"); card.fullName = node("p", "detail-name"); card.file = node("p", "path"); card.parameters = node("p", "help"); files.append(card.fullName, card.parameters, card.file);
-    card.detail.append(tabs, card.source, stats, files);
+    card.usage = makeUsage();
+    card.errorSummary = node("div", "error-summary"); card.errorSummary.hidden = true;
+    card.errorLabel = node("strong");
+    card.errorButton = button("查看错误详情", () => { openResultDetail(id, card.errorButton, card); });
+    card.errorButton.setAttribute("aria-haspopup", "dialog"); card.errorButton.setAttribute("aria-controls", "favorite-drawer");
+    card.errorSummary.append(card.errorLabel, card.errorButton); card.zone.append(card.errorSummary);
     const footer = node("div", "card-footer"); footer.append(badge, controls);
-    root.classList.add("animation-card"); root.append(header, card.zone, card.usage, footer, card.detail);
+    root.classList.add("animation-card"); root.append(header, card.zone, card.usage, footer);
     cards.set(`${view}:${id}`, card); $(views[view].results).append(root); return card;
   }
 
@@ -644,28 +639,21 @@ import { renderDailyHistory } from './history-preview.mjs';
     const root = node("article", "result-card fingerprint-card"); root.dataset.runId = id;
     const header = node("div", "card-header"), model = node("div", "card-model");
     const title = node("h3"), provider = node("p", "card-provider"); model.append(title, provider); header.append(model);
-    const card = { id, view, root, title, provider, mode: "samples", kind: "fingerprint", cancelling: false, metrics: [] };
+    const card = { id, view, root, title, provider, cancelling: false };
     card.zone = node("div", "fingerprint-zone"); card.caption = node("span", "fingerprint-caption"); card.prediction = node("strong", "fingerprint-prediction"); card.family = node("span", "fingerprint-family");
     const dots = node("div", "sample-dots"); card.dots = [0, 1, 2].map(index => { const dot = node("span", "sample-dot"); dot.setAttribute("aria-label", `采样 ${index + 1}`); dots.append(dot); return dot; });
     card.zone.append(card.caption, card.prediction, card.family, dots);
-    card.badge = node("span", "badge"); card.detail = node("div", "card-detail"); card.detail.hidden = true; card.detail.id = `detail-${view}-${id}`;
+    card.badge = node("span", "badge");
     card.cancel = iconButton("close", "取消指纹检测", async () => {
       if (card.cancelling || !active(runs.get(id) || {})) return;
       card.cancelling = true; renderCard(id, view);
       try { updateRun(await api(`api/runs/${id}/cancel`, { method: "POST" })); } catch (err) { notice(err.message); }
       finally { card.cancelling = false; renderCard(id, view); }
     });
-    card.disclose = iconButton("info", "指纹详情", () => toggleDetail(card));
-    card.disclose.setAttribute("aria-controls", card.detail.id); card.disclose.setAttribute("aria-expanded", "false");
+    card.disclose = detailButton(card, "指纹详情");
     const controls = node("div", "card-actions"), footer = node("div", "card-footer"); controls.append(card.cancel, card.disclose); footer.append(card.badge, controls);
-    card.fullName = node("p", "detail-name"); card.parameters = node("p", "help"); card.ranking = node("div", "fingerprint-ranking"); card.evidence = node("p", "help detail-evidence");
-    const tabs = node("div", "tab-buttons"); card.tabs = {};
-    for (const [mode, label] of [["samples", "采样"], ["route", "路由"], ["analysis", "评分"]]) { const tab = button(label, () => setMode(card, mode)); card.tabs[mode] = tab; tabs.append(tab); }
-    card.source = node("pre", "source-view"); card.source.setAttribute("tabindex", "0"); card.file = node("p", "path");
-    const stats = makeStats(card, "首次响应"); card.usage = makeUsage();
-    card.message = node("p", "card-message"); card.message.hidden = true;
-    card.detail.append(card.fullName, card.parameters, card.ranking, card.evidence, tabs, card.source, stats, card.file, card.message);
-    root.append(header, card.zone, card.usage, footer, card.detail); cards.set(`${view}:${id}`, card); $(views[view].results).append(root); return card;
+    card.usage = makeUsage(); root.append(header, card.zone, card.usage, footer);
+    cards.set(`${view}:${id}`, card); $(views[view].results).append(root); return card;
   }
 
   function renderCandyCard(id, view) {
@@ -673,49 +661,39 @@ import { renderDailyHistory } from './history-preview.mjs';
     if (!card) {
       const root = node("article", "result-card candy-card"), header = node("div", "card-header"), names = node("div", "card-model");
       root.dataset.runId = id;
-      card = { id, view, root, kind: "candy", title: node("h3"), provider: node("p", "card-provider"), metrics: [] };
+      card = { id, view, root, title: node("h3"), provider: node("p", "card-provider") };
       names.append(card.title, card.provider); header.append(names); card.zone = node("div", "candy-zone"); card.answer = node("strong", "candy-answer"); card.verdict = node("span");
       card.placeholder = node("div", "preview-placeholder"); card.progress = node("div", "progress-line"); card.progress.setAttribute("aria-hidden", "true"); card.loadingLabel = node("strong");
       card.placeholder.append(card.progress, card.loadingLabel); card.zone.append(card.placeholder, card.answer, card.verdict);
-      card.detail = node("div", "card-detail"); card.detail.id = `detail-${view}-${id}`; card.detail.hidden = true;
-      card.disclose = iconButton("info", "糖果详情", () => toggleDetail(card)); card.disclose.setAttribute("aria-controls", card.detail.id); card.disclose.setAttribute("aria-expanded", "false");
+      card.disclose = detailButton(card, "糖果详情");
       card.cancel = iconButton("close", "取消糖果测试", async () => {
         if (card.cancel.disabled || !active(runs.get(id))) return; card.cancel.disabled = true;
         try { updateRun(await api(`api/runs/${id}/cancel`, { method: "POST" })); } catch (err) { notice(err.message); } finally { card.cancel.disabled = false; }
       });
       const footer = node("div", "card-footer"); card.time = node("span", "help"); const controls = node("div", "card-actions"); controls.append(card.cancel, card.disclose); footer.append(card.time, controls);
-      card.parameters = node("p", "help"); card.source = node("pre", "source-view"); card.source.setAttribute("tabindex", "0");
-      card.message = node("p", "card-message"); card.message.hidden = true;
-      card.copy = button("复制回答", async () => {
-        if (card.copy.disabled || card.copying) return; card.copying = true; card.copy.disabled = true;
-        try { await navigator.clipboard.writeText(runs.get(id)?.content || ""); text(card.copy, "已复制"); }
-        catch { notice("复制失败，可在详情中手动复制"); }
-        finally { card.copying = false; card.copy.disabled = !runs.get(id)?.content; }
-      });
-      card.usage = makeUsage(); card.detail.append(card.parameters, card.source, makeStats(card, "首次正文"), card.copy, card.message); root.append(header, card.zone, card.usage, footer, card.detail);
+      card.usage = makeUsage(); root.append(header, card.zone, card.usage, footer);
       cards.set(`${view}:${id}`, card); $(views[view].results).append(root);
     }
     renderCardHeading(card, run); renderUsage(card.usage, run); card.root.dataset.state = run.status;
-    const verdict = run.status === "completed" ? run.candy?.verdict || "review" : "incomplete"; card.zone.dataset.verdict = verdict;
+    card.zone.dataset.verdict = candyVerdict(run);
     card.placeholder.hidden = !active(run); card.progress.hidden = run.status !== "running";
     card.answer.hidden = card.verdict.hidden = active(run); text(card.loadingLabel, states[run.status]);
     text(card.answer, String(run.candy?.answer ?? "—"));
-    card.answer.title = String(run.candy?.answer ?? "—"); card.copy.disabled = !run.content || Boolean(card.copying);
-    text(card.verdict, ({ match: "答案匹配", mismatch: "答案不符", review: "待复核", incomplete: ({ error: "请求失败", cancelled: "已取消", interrupted: "已中断", truncated: "已截断" })[run.status] || "未完成" })[verdict]);
+    card.answer.title = String(run.candy?.answer ?? "—");
+    text(card.verdict, candyVerdictLabel(run));
     text(card.time, when(run.createdAt)); card.cancel.hidden = !active(run);
-    if (!card.detail.hidden) {
-      text(card.parameters, `${run.effort || "默认档位"} · ${tokenLabel(run.maxTokens)}\n${run.candy?.version || "shape-choice-v1"}\n仅核对最终数值，推理需人工复核。`);
-      renderStats(card, run);
-      text(card.source, run.content || "暂无回答"); text(card.message, run.error || run.loadError || ""); card.message.hidden = !card.message.textContent;
-      if (!run.loaded && !run.loading && !run.loadError) loadDetail(id);
-    }
+  }
+
+  function resultNames(run) {
+    const provider = run.provider || (typeof run.model === "string" ? run.model.split("/")[0] : "未知供应商");
+    return [modelLabel({ id: run.model, name: run.modelName, provider, providerName: run.providerName }, false), run.providerName || provider];
   }
 
   function renderCardHeading(card, run) {
-    const provider = run.provider || (typeof run.model === "string" ? run.model.split("/")[0] : "未知供应商");
-    text(card.title, modelLabel({ id: run.model, name: run.modelName, provider, providerName: run.providerName }, false));
+    const [name, provider] = resultNames(run);
+    text(card.title, name);
     card.title.title = `${run.modelName || run.model}\n${run.model}`;
-    text(card.provider, run.providerName || provider); card.provider.title = run.providerName || provider;
+    text(card.provider, provider); card.provider.title = provider;
   }
 
   function renderFingerprintCard(id, view) {
@@ -727,6 +705,7 @@ import { renderDailyHistory } from './history-preview.mjs';
     text(card.caption, active(run) ? `采样 ${info.completed || 0}/3` : info.prediction ? "最接近的候选" : "检测结果");
     text(card.prediction, active(run) ? (run.status === "running" ? "正在采样" : "等待采样") : info.prediction || label);
     text(card.family, active(run) ? `${info.valid || 0} 条有效回答` : info.family || (run.status === "error" ? "展开详情查看原因" : "3 次独立采样"));
+    card.prediction.title = card.prediction.textContent; card.family.title = card.family.textContent;
     for (const [index, dot] of card.dots.entries()) {
       const sample = info.samples?.[index]; dot.dataset.state = sample?.state || "queued";
       const count = `${sample?.count ?? 0}/${sample?.expectedCount ?? "—"}`;
@@ -734,24 +713,6 @@ import { renderDailyHistory } from './history-preview.mjs';
       dot.setAttribute("aria-label", dot.title);
     }
     card.cancel.hidden = !active(run); card.cancel.disabled = card.cancelling;
-    if (!card.detail.hidden) {
-      text(card.fullName, `${run.modelName || run.model}\n${run.model}`);
-      text(card.parameters, `${run.effort || "默认档位"} · ${run.api || "自动接口"} · ${tokenLabel(run.maxTokens)} · ${concurrencyLabel(run)}`);
-      if (run.analysis !== card.renderedAnalysis) {
-        card.renderedAnalysis = run.analysis; card.ranking.replaceChildren();
-        for (const [index, item] of (run.analysis?.results || []).slice(0, 5).entries()) { const row = node("div", "ranking-row"); row.title = item.model;
-          row.append(node("span", "", `${index + 1}. ${item.display_name || item.model}`), node("span", "", Number.isFinite(item.probability) ? `${(item.probability * 100).toFixed(1)}%` : `分数 ${Number(item.score).toFixed(2)}`)); card.ranking.append(row); }
-      }
-      const probability = info.probability == null ? "概率不可用" : `库内概率 ${(info.probability * 100).toFixed(1)}%`;
-      text(card.evidence, `${probability} · ${info.verified ? "路由已核实" : "路由未核实"}\n参考库 ${run.bank?.builtAt || "—"}\n${run.bank?.sha256 || ""}\n候选仅供参考库内比较，不能证明模型身份。`);
-      text(card.source, card.mode === "route" ? JSON.stringify((run.samples || []).map(sample => sample.provenance || {}), null, 2) : card.mode === "analysis" ? JSON.stringify(run.analysis || {}, null, 2) :
-        (run.samples || []).map((sample, index) => `采样 ${index + 1} · ${sample.count}/${sample.expected_count} · ${sample.state}\n${sample.raw_text || "暂无回答"}${sample.error ? "\n" + sample.error : ""}`).join("\n\n"));
-      for (const [mode, tab] of Object.entries(card.tabs)) tab.setAttribute("aria-pressed", String(card.mode === mode));
-      renderStats(card, run);
-      text(card.file, run.files?.samples || run.files?.metadata || "正在准备保存位置");
-      const message = run.error || run.loadError; card.message.hidden = !message; text(card.message, message);
-      if (!run.loaded && !run.loading && !run.loadError) loadDetail(id);
-    }
   }
 
   function fitPreview(card) {
@@ -767,16 +728,142 @@ import { renderDailyHistory } from './history-preview.mjs';
   document.addEventListener?.("visibilitychange", () => { for (const card of [...cards.values()]) renderCard(card.id, card.view); });
   addEventListener("resize", () => { for (const card of cards.values()) fitPreview(card); });
 
-  function setMode(card, mode) {
-    card.mode = mode;
-    renderCard(card.id, card.view);
+  function detailButton(card, label) {
+    const control = button("查看详情", () => { openResultDetail(card.id, card.disclose, card); }, "quiet detail-button");
+    control.title = label; control.setAttribute("aria-label", label);
+    control.setAttribute("aria-controls", "favorite-drawer"); control.setAttribute("aria-haspopup", "dialog");
+    return control;
   }
 
-  function toggleDetail(card) {
-    const run = runs.get(card.id); if (!run) return;
-    card.detail.hidden = !card.detail.hidden; card.disclose.setAttribute("aria-expanded", String(!card.detail.hidden));
-    if (!card.detail.hidden) run.loadError = "";
-    renderCard(card.id, card.view);
+  function openResultDetail(id, origin, card) {
+    const run = runs.get(id); if (!run) return;
+    const kind = run.kind || "pelican";
+    const failure = kind === "pelican" ? node("details", "editor-details") : null;
+    const fromError = Boolean(failure && origin && origin === card?.errorButton);
+    const message = failure ? node("pre", "source-view") : node("p", "form-error");
+    const detail = { id: run.id, card, kind, tabs: new Map(), usage: makeUsage(), source: node("pre", "source-view"), message, failure, elapsed: node("span"), phase: node("span", "running-label") };
+    const [name, provider] = resultNames(run);
+    const content = favoritesUI.openDrawer({ pelican: "动画详情", fingerprint: "指纹详情", candy: "糖果结果" }[kind], origin, "reading", () => {
+      if (detail.preview) previewObserver?.unobserve(detail.preview.zone);
+      resultDetail = null;
+    });
+    resultDetail = detail;
+    const choices = kind === "pelican" ? [["preview", "动画预览", "复制源码"], ["html", "HTML 源码", "复制源码"], ["content", "原始输出", "复制输出"]] :
+      kind === "fingerprint" ? [["samples", "采样", "复制采样"], ["analysis", "评分", "复制评分"], ["route", "路由", "复制路由"]] :
+      [["answer", "完整回答", "复制回答"], ["reasoning", "思考", "复制思考"], ["params", "参数", "复制参数"]];
+    detail.mode = choices[0][0];
+    const metadata = node("div", "detail-meta"), tabs = node("div", "segments reading-tabs");
+    metadata.append(node("span", "", provider), node("span", "", when(run.createdAt)), detail.elapsed, detail.phase);
+    tabs.setAttribute("role", "group"); tabs.setAttribute("aria-label", "详情内容");
+    detail.copyLabel = new Map(choices.map(([mode, , label]) => [mode, label]));
+    for (const [mode, label] of choices) {
+      const tab = button(label, () => {
+        detail.mode = mode; detail.source.scrollTop = 0; detail.fallback.hidden = true;
+        text(detail.copy, detail.copyLabel.get(mode)); renderResultDetail();
+      });
+      detail.tabs.set(mode, tab); tabs.append(tab);
+    }
+    detail.copy = button(detail.copyLabel.get(detail.mode), async () => {
+      const { mode, copyText } = detail; if (!copyText) return;
+      try { await navigator.clipboard.writeText(copyText); if (resultDetail === detail && detail.mode === mode) text(detail.copy, "已复制"); }
+      catch { if (resultDetail === detail && detail.mode === mode) { detail.fallback.hidden = false; detail.fallback.value = copyText; detail.fallback.focus(); detail.fallback.select(); } }
+    }, "primary");
+    $("drawer-tools").append(detail.copy);
+    detail.fallback = node("textarea", "source-view"); detail.fallback.readOnly = true; detail.fallback.hidden = true; detail.fallback.setAttribute("aria-label", "请手动复制");
+    detail.source.setAttribute("tabindex", "0");
+    detail.stats = makeStats(detail, kind === "fingerprint" ? "首次响应" : "首次正文");
+    detail.parameters = node("p", "help detail-evidence"); detail.file = node("p", "path");
+    content.append(node("h3", "detail-name", name), metadata, detail.usage, tabs);
+    if (failure) {
+      failure.append(node("summary", "", "原始错误详情"), message);
+      failure.open = fromError; failure.hidden = true;
+      if (fromError) content.insertBefore(failure, tabs);
+    }
+    const footer = $("drawer-footer");
+    if (kind === "pelican") {
+      detail.preview = { id: run.id, zone: node("div", "preview-zone reading-preview"), width: card.width, height: card.height };
+      content.append(detail.preview.zone); previewCards.set(detail.preview.zone, detail.preview);
+      previewObserver?.observe(detail.preview.zone); footer.append(card.play);
+    }
+    if (kind === "candy") {
+      detail.headline = node("div", "record-headline"); detail.answer = node("strong"); detail.verdict = node("span");
+      detail.headline.append(detail.answer, detail.verdict); content.append(detail.headline);
+    }
+    content.append(detail.source, detail.fallback);
+    if (!fromError) content.append(failure || message);
+    detail.retry = button("重试读取", () => { run.loadError = ""; return renderResultDetail(); });
+    content.append(detail.retry);
+    if (kind === "fingerprint") { detail.ranking = node("div", "fingerprint-ranking"); content.append(detail.ranking); }
+    content.append(detail.stats, detail.parameters, detail.file);
+    if (!card && kind === "candy") {
+      detail.cancel = button("取消本次", async () => {
+        if (!active(run) || detail.cancel.disabled) return;
+        detail.cancel.disabled = true;
+        try {
+          updateRun(await api(`api/runs/${id}/cancel`, { method: "POST" }));
+          if (resultDetail === detail) favoritesUI.closeDrawer();
+        }
+        catch (error) { if (resultDetail === detail) { text(detail.message, error.message); detail.message.hidden = false; } }
+        finally { detail.cancel.disabled = false; }
+      }, "danger");
+      footer.append(detail.cancel);
+    }
+    footer.append(button("关闭详情", favoritesUI.closeDrawer));
+    if (!fromError) run.loadError = "";
+    const loaded = renderResultDetail();
+    if (fromError && !failure.hidden) failure.firstElementChild.focus({ preventScroll: true });
+    return loaded;
+  }
+
+  function renderResultDetail() {
+    const detail = resultDetail, run = runs.get(detail?.id); if (!run) return;
+    const { mode, kind, card, preview } = detail;
+    for (const [key, tab] of detail.tabs) tab.setAttribute("aria-pressed", String(key === mode));
+    renderUsage(detail.usage, run); renderStats(detail, run);
+    text(detail.elapsed, `耗时 ${detail.metrics[0].textContent}`);
+    detail.phase.hidden = !active(run); text(detail.phase, active(run) ? states[run.status] : "");
+    const parameters = [run.model, run.effort || "默认档位", tokenLabel(run.maxTokens), concurrencyLabel(run)].join(" · ");
+    let output = run.content || "", placeholder = run.loadError ? "读取失败" : active(run) ? "等待结果…" : run.loaded ? "暂无输出" : "正在读取…";
+    if (kind === "pelican") {
+      if (mode !== "content") output = run.html || "";
+      if (mode === "preview" && run.status === "completed" && !run.loadError) placeholder = card.stopped ? "已停止" : run.loaded ? "暂无动画预览" : "正在读取预览…";
+      const url = mode === "preview" && run.status === "completed" && !card.stopped ? run.previewUrl : "";
+      if (preview.url !== url) { preview.frame?.remove(); preview.frame = null; preview.error = ""; }
+      preview.zone.hidden = !url; preview.url = url;
+      if (url && !preview.frame) {
+        preview.frame = node("iframe"); preview.frame.title = `${card.title.textContent} 的动画预览`;
+        preview.frame.setAttribute("sandbox", "allow-scripts"); preview.frame.referrerPolicy = "no-referrer";
+        preview.frame.src = url; preview.zone.append(preview.frame); fitPreview(preview);
+      }
+      detail.source.hidden = Boolean(url); card.play.hidden = run.status !== "completed" || mode !== "preview";
+      text(detail.parameters, parameters); text(detail.file, run.files?.html || run.files?.response);
+    } else if (kind === "fingerprint") {
+      const info = run.fingerprint || {};
+      output = mode === "route" ? JSON.stringify((run.samples || []).map(sample => sample.provenance || {}), null, 2) : mode === "analysis" ? (run.analysis ? JSON.stringify(run.analysis, null, 2) : "") :
+        (run.samples || []).map((sample, index) => `采样 ${index + 1} · ${sample.count}/${sample.expected_count} · ${sample.state}\n${sample.raw_text || "暂无回答"}${sample.error ? "\n" + sample.error : ""}`).join("\n\n");
+      if (run.analysis !== detail.renderedAnalysis) {
+        detail.renderedAnalysis = run.analysis; detail.ranking.replaceChildren();
+        for (const [index, item] of (run.analysis?.results || []).slice(0, 5).entries()) { const row = node("div", "ranking-row"); row.title = item.model;
+          row.append(node("span", "", `${index + 1}. ${item.display_name || item.model}`), node("span", "", Number.isFinite(item.probability) ? `${(item.probability * 100).toFixed(1)}%` : `分数 ${Number(item.score).toFixed(2)}`)); detail.ranking.append(row); }
+      }
+      const probability = info.probability == null ? "概率不可用" : `库内概率 ${(info.probability * 100).toFixed(1)}%`;
+      text(detail.parameters, `${parameters} · ${run.api || "自动接口"}\n${probability} · ${info.verified ? "路由已核实" : "路由未核实"}\n参考库 ${run.bank?.builtAt || "—"}\n${run.bank?.sha256 || ""}\n候选仅供参考库内比较，不能证明模型身份。`);
+      text(detail.file, run.files?.samples || run.files?.metadata);
+    } else {
+      if (detail.cancel) detail.cancel.hidden = !active(run);
+      detail.headline.hidden = mode !== "answer" || active(run);
+      detail.headline.dataset.verdict = candyVerdict(run);
+      text(detail.answer, run.candy?.answer ?? "—"); text(detail.verdict, candyVerdictLabel(run));
+      if (mode === "reasoning") { output = run.reasoning || ""; if (run.loaded && !active(run)) placeholder = "暂无思考内容"; }
+      if (mode === "params") output = `${parameters}\n题目 ${run.candy?.version || "—"}${run.promptHash ? `\n${run.promptHash}` : ""}${run.prompt ? `\n\n${run.prompt}` : ""}`;
+      text(detail.parameters, "仅核对最终数值，推理需人工复核。");
+    }
+    text(detail.source, mode === "preview" ? placeholder : output || placeholder);
+    detail.copyText = output; detail.copy.disabled = !output;
+    text(detail.message, run.error || run.loadError || preview?.error || card?.previewError || "");
+    (detail.failure || detail.message).hidden = !detail.message.textContent;
+    detail.retry.hidden = !run.loadError;
+    if (!run.loaded && !run.loading && !run.loadError) return loadDetail(detail.id);
   }
 
   async function replay(card) {
@@ -784,9 +871,9 @@ import { renderDailyHistory } from './history-preview.mjs';
     card.reloading = true; card.stopped = false; card.previewError = "";
     if (card.frame) { card.frame.remove(); card.frame = null; }
     run.previewUrl = ""; run.loaded = false; run.loadError = "";
-    const loaded = loadDetail(card.id); renderCard(card.id, card.view);
+    const loaded = loadDetail(card.id); renderShown(card.id);
     await loaded;
-    card.reloading = false; if (cards.get(`${card.view}:${card.id}`) === card) renderCard(card.id, card.view);
+    card.reloading = false; if (cards.get(`${card.view}:${card.id}`) === card) renderShown(card.id);
   }
 
   async function loadDetail(id) {
@@ -832,23 +919,16 @@ import { renderDailyHistory } from './history-preview.mjs';
     card.root.dataset.state = run.status;
     card.badge.className = `badge ${run.status}`; text(card.badge, ({ invalid: "无效输出", truncated: "已截断" })[run.status] || states[run.status] || run.status);
     card.badge.title = states[run.status] || run.status;
-    if (!card.detail.hidden) {
-      text(card.fullName, run.modelName || run.model);
-      text(card.parameters, `${run.model} · ${run.effort || "默认档位"} · ${tokenLabel(run.maxTokens)} · ${concurrencyLabel(run)}`);
-      renderStats(card, run);
-      text(card.file, run.files?.html || run.files?.response || "正在准备保存位置");
-      for (const [mode, tab] of Object.entries(card.tabs)) tab.setAttribute("aria-pressed", String(mode === card.mode));
-      text(card.source, card.mode === "html" ? (run.html || "暂无完整 HTML") : (run.content || "暂无正文"));
-    }
     const message = run.error || run.loadError || card.previewError;
-    card.message.hidden = !message; text(card.message, message);
+    card.errorSummary.hidden = !message;
+    text(card.errorLabel, message ? (run.status === "completed" ? "预览异常" : states[run.status]) : "");
     card.cancel.hidden = !active(run);
     card.cancel.disabled = card.cancelling;
-    card.play.hidden = run.status !== "completed"; card.restart.hidden = card.open.hidden = card.play.hidden;
+    card.restart.hidden = card.open.hidden = run.status !== "completed";
     card.play.disabled = card.restart.disabled = Boolean(run.loading || card.reloading);
     card.open.disabled = Boolean(run.loading || card.opening);
     setIcon(card.play, card.stopped ? "play" : "pause", card.stopped ? "播放预览" : "停止预览");
-    if ((visibleCard(card) || !card.detail.hidden) && (!active(run) || !card.detail.hidden) && !run.loaded && !run.loading && !run.loadError) loadDetail(id);
+    if (visibleCard(card) && !active(run) && !run.loaded && !run.loading && !run.loadError) loadDetail(id);
     if (run.status === "completed" && run.previewUrl && !card.stopped && visibleCard(card)) {
       if (!card.frame) {
         card.placeholder.hidden = true;
@@ -940,7 +1020,7 @@ import { renderDailyHistory } from './history-preview.mjs';
     }
     return ids.map(id => cards.get(`favorites:${id}`)).filter(Boolean);
   }
-  const favoritesUI = createFavoritesUI({ $, node, text, button, iconButton, api, models, runs, modelLabel, when, active, makeUsage, renderUsage, mount: mountFavoriteRuns, updateRun, confirmAction, isVisible: () => activeView === "favorites", initialKind: query.get("automatic"), rememberView });
+  const favoritesUI = createFavoritesUI({ $, node, text, button, iconButton, api, models, runs, modelLabel, active, makeUsage, renderUsage, mount: mountFavoriteRuns, openResultDetail, confirmAction, isVisible: () => activeView === "favorites", initialKind: query.get("automatic"), rememberView });
   const tabViews = ["current", "fingerprint", "candy", "favorites", "history"];
   for (const [index, name] of tabViews.entries()) {
     const tab = $(`${name}-tab`);
@@ -959,31 +1039,13 @@ import { renderDailyHistory } from './history-preview.mjs';
   });
   $("history-filter").addEventListener("change", renderHistory);
   $("history-source").addEventListener("change", renderHistory);
+  for (const name of ['current', 'fingerprint', 'candy']) $(`${name}-history-link`).addEventListener('click', () => openManualHistory(name));
   $("favorite-selected").addEventListener("click", async () => {
     const control = $("favorite-selected"); if (control.disabled || addingFavorites || !validateNumber("max-tokens", "输出上限")) return;
     const originView = activeView; addingFavorites = true; control.disabled = true; control.setAttribute("aria-busy", "true");
     try { await favoritesUI.addSelected([...selected], { maxTokens: Number($("max-tokens").value), prompt: $("prompt").value }); if (activeView === originView) setView("favorites"); }
     catch (err) { error(err.message); } finally { addingFavorites = false; control.removeAttribute("aria-busy"); control.disabled = !selected.size || !favoritesAvailable; }
   });
-  closeExport();
-  $("export-close").addEventListener("click", () => closeExport(true));
-  $("export-panel").addEventListener("cancel", event => { event.preventDefault(); closeExport(true); });
-  $("export-toggle").addEventListener("click", () => { if (!$("export-toggle").disabled) toggleExport($("export-preview").hidden); });
-  $("export-download").addEventListener("click", () => {
-    const group = historyGroups.get(exportedBatch); if (!group || !$("export-json").value) return;
-    const url = URL.createObjectURL(new Blob([$("export-json").value], { type: "application/json" })), link = node("a");
-    link.href = url; link.download = `magpie-model-lab-${group.date}-${group.kind || "batch"}.json`;
-    link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-  });
-  $("export-copy").addEventListener("click", async () => {
-    const control = $("export-copy"); if (control.disabled || !$("export-json").value) return;
-    const version = exportVersion; control.disabled = true;
-    try { await navigator.clipboard.writeText($("export-json").value); if (version === exportVersion) exportStatus("已复制 JSON"); }
-    catch {
-      if (version === exportVersion) { toggleExport(true); $("export-json").focus(); $("export-json").select(); exportStatus("请复制已选中的 JSON"); }
-    } finally { if (version === exportVersion) control.disabled = false; }
-  });
-
   function renderBank(value) {
     const ready = value?.state === "ready";
     $("bank-status").dataset.state = value?.state || "missing";
@@ -1199,14 +1261,22 @@ import { renderDailyHistory } from './history-preview.mjs';
       setView("fingerprint"); return;
     }
     if (!data || data.type !== "pelican-preview") return;
-    const card = [...cards.values()].find(card => card.id === data.id && card.frame?.contentWindow === event.source);
+    const reading = resultDetail?.preview;
+    const card = reading?.id === data.id && reading.frame?.contentWindow === event.source ? reading : [...cards.values()].find(card => card.id === data.id && card.frame?.contentWindow === event.source);
     if (!card) return;
     if (data.kind === "size" && Number.isFinite(data.width) && Number.isFinite(data.height) && data.width > 0 && data.height > 0) {
       card.width = Math.ceil(data.width); card.height = Math.ceil(data.height); fitPreview(card);
     }
-    if (data.kind === "error") { card.previewError = `预览运行错误：${String(data.message).slice(0, 400)}`; renderCard(data.id, card.view); }
+    if (data.kind === "error") {
+      const message = `预览运行错误：${String(data.message).slice(0, 400)}`;
+      if (card === reading) { card.error = message; renderResultDetail(); }
+      else { card.previewError = message; renderCard(data.id, card.view); }
+    }
   });
-  setInterval(() => { for (const card of cards.values()) { const run = runs.get(card.id); if (card.metrics[0] && card.view === activeView && !card.detail.hidden && active(run || {}) && run.startedAt) text(card.metrics[0], seconds(Date.now() - Date.parse(run.startedAt))); } }, 1000);
+  setInterval(() => {
+    const run = runs.get(resultDetail?.id);
+    if (run && active(run) && run.startedAt) { renderStats(resultDetail, run); text(resultDetail.elapsed, `耗时 ${resultDetail.metrics[0].textContent}`); }
+  }, 1000);
 
   async function bootstrap() {
     if (bootstrapping) return; bootstrapping = true; notice("");

@@ -14,9 +14,9 @@
 
 Magpie 的普通 npm 搜索当前主要筛选 OpenCode 供应商插件和 pi provider 包。仅增加 `magpie-plugin` **npm keyword** 不等于进入发现；GitHub **topic** 是另一个设置。本插件依赖 Magpie 页面与网关，保持真实分类，不添加无关的 OpenCode 登录插件标签。
 
-## 1.0.2 正式更新
+## 1.0.3 正式更新
 
-当前源码和正式安装包版本为 **1.0.2**。正式标签和 Release 为 `v1.0.2`，独立资产为 `magpie-pelican-bench-1.0.2.zip` 与校验文件。保留已有发布和本地试用包；重新打包时选择一个新的输出目录。后续发布递增版本，不覆盖旧标签或资产。
+当前源码和正式安装包版本为 **1.0.3**。正式标签和 Release 为 `v1.0.3`，独立资产为 `magpie-pelican-bench-1.0.3.zip` 与校验文件。保留已有发布和本地试用包；重新打包时选择新的输出目录。后续发布递增版本，不覆盖旧标签或资产。
 
 清单的中英文简介及 keywords 包含 AI 模型评测、模型对比、推理能力、智商／智力趣味测试、鹈鹕动画、模型指纹和定时监控。`magpie.summary` 每种语言均须保持在宿主允许的 300 UTF-8 字节以内，否则该语言简介会被忽略。发布同步 GitHub 仓库简介为 `模型实验室 Model Lab for Magpie：AI 模型评测与对比、糖果推理和智商趣味测试、鹈鹕动画、模型指纹、定时自动测试。`，并增加 `model-evaluation`、`model-comparison`、`reasoning-benchmark`、`iq-style-test` 等主题。检索仍受 GitHub 索引和宿主缓存影响。
 
@@ -54,8 +54,8 @@ node --test tests/*.test.mjs
 bun test ./tests
 bun tools/check-static.mjs
 npm pack --dry-run --json
-powershell -NoProfile -File tools/package.ps1 -OutputDirectory dist/release-1.0.2
-powershell -NoProfile -File tools/check-package.ps1 -Archive dist/release-1.0.2/magpie-pelican-bench-1.0.2.zip
+powershell -NoProfile -File tools/package.ps1 -OutputDirectory dist/release-1.0.3
+powershell -NoProfile -File tools/check-package.ps1 -Archive dist/release-1.0.3/magpie-pelican-bench-1.0.3.zip
 npm pack --pack-destination dist --ignore-scripts
 ```
 
@@ -78,7 +78,7 @@ gh release create v1.0.0 --repo xiaopeng66/magpie-model-lab --verify-tag --title
 
 随后在该 Release 上传验证后的 `magpie-pelican-bench-1.0.0.zip` 和 `.zip.sha256`。GitHub 自带源码压缩包也可安装，但独立 ZIP 直接包含插件根目录，便于本地添加。
 
-用户可以使用 `magpie plugin add github:xiaopeng66/magpie-model-lab` 安装默认分支，或附加 `#v1.0.2` 固定本次更新。后续发布保留同一仓库和包名，并递增版本。
+用户可以使用 `magpie plugin add github:xiaopeng66/magpie-model-lab` 安装默认分支，或附加 `#v1.0.3` 固定本次更新。后续发布保留同一仓库和包名，并递增版本。
 
 ## 验证发现
 
@@ -99,7 +99,7 @@ Magpie 自有社区栏目与 GitHub 非官方栏目不同；加 topic 不代表�
 ```powershell
 npm login --registry https://registry.npmjs.org
 npm whoami --registry https://registry.npmjs.org
-npm publish ./dist/magpie-pelican-bench-1.0.2.tgz --access public --registry https://registry.npmjs.org
+npm publish ./dist/magpie-pelican-bench-1.0.3.tgz --access public --registry https://registry.npmjs.org
 ```
 
 发布已检查的 `.tgz`，可确保上传的正是检查过的文件。npm 同名同版本不能覆盖重发；需要修正时发布新版本。登录、双重验证与包名权限以 npm 实际提示为准。
