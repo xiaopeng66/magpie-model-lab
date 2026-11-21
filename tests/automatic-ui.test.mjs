@@ -188,7 +188,7 @@ test("automatic concurrency is directly visible and saves zero without a disclos
   limit.value = "0";
   await limit.fire("input");
   await buttons(ui, footer(ui)).find(control => control.textContent === "保存设置").fire("click");
-  assert.deepEqual(calls.find(([path]) => path === "api/schedules/settings")?.[1], { concurrency: 0 });
+  assert.deepEqual(calls.find(([path]) => path === "api/favorites/manage")?.[1], { edits: [], removeIds: [], concurrency: 0 });
 });
 
 test("animation timeline starts at the latest result and follows new work without resetting ordinary manual scrolling", async () => {

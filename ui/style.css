@@ -248,10 +248,10 @@ details[open] > summary > .chevron, .disclosure-row[aria-expanded="true"] > .che
 .progress-line { width: 36px; height: 3px; border-radius: 3px; background: var(--line); overflow: hidden; }
 .progress-line::after { content: ""; display: block; width: 50%; height: 100%; background: var(--accent); border-radius: inherit; animation: progress 1.4s ease-in-out infinite alternate; }
 @keyframes progress { to { transform: translateX(100%); } }
-.card-footer { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 28px; margin-top: 6px; }
-.card-footer .badge { flex: 0 1 auto; min-width: 0; padding: 0; background: transparent; line-height: 18px; }
+.card-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; min-height: 28px; margin-top: 6px; }
+.card-footer .badge { flex: none; padding: 0; background: transparent; line-height: 18px; }
 .card-footer > .help { line-height: 18px; }
-.card-actions { display: flex; flex: none; align-items: center; justify-content: end; gap: 2px; }
+.card-actions { display: flex; flex: none; align-items: center; justify-content: end; gap: 2px; margin-left: auto; }
 .card-actions .icon-button { width: 26px; height: 26px; min-height: 26px; padding: 5px; border-radius: 6px; }
 .card-actions .icon { width: 15px; height: 15px; }
 .card-detail { margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--line); }

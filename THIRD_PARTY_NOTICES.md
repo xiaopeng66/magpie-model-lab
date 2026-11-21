@@ -8,10 +8,17 @@ revision `48a510c39b9f695a896123f1017673d87abbfb80`. Its source is
 [Ikaleio/lm-detector](https://github.com/Ikaleio/lm-detector), published from
 `1e58ed83c1cde17f88cba89560ad4d083042ae92`.
 
-The runtime has one local change: `decompress` is exported for bounded reference
-downloads and consistency checks. Challenge generation, request templates,
-number parsing and scoring algorithms are unchanged. The original runtime
-SHA-256 is `e8ad8d97eb8ed97cef084885e0e85274a7db28471c95dc1a46eda9919d4699f8`.
+The runtime has local changes: `decompress` is exported for bounded reference
+downloads and consistency checks; number parsing preserves complete signed,
+decimal and exponent tokens, and accepts only integer values in the challenge's
+1–355 range. Streaming token boundaries and raw numeric diagnostics use the
+same parsing rule. Negative numbers and decimal fragments are no longer treated
+as valid positive integers. Reference loading also validates scoring parameter
+shapes, dimensions and finite values, and runs a bounded scoring check before a
+snapshot can be installed. Malformed optional calibration bindings yield no
+confidence instead of throwing. Challenge generation, request templates and
+ranking formulas are unchanged. The upstream SDK version remains 0.2.0. The original
+runtime SHA-256 is `e8ad8d97eb8ed97cef084885e0e85274a7db28471c95dc1a46eda9919d4699f8`.
 
 The gateway transport, queue, persistence and interface are implemented here.
 No React, React DOM, icon package, or reference plugin service is bundled.
@@ -42,9 +49,11 @@ SOFTWARE.
 
 ## fzstd 0.1.1
 
-The vendored SDK contains this MIT-licensed decoder. Current Node/Bun use the
-built-in Zstandard decoder with a bounded output size; Node versions without
-that API use the bundled decoder with a preallocated, bounded output buffer.
+The vendored SDK contains this MIT-licensed decoder. Runtimes with a built-in
+Zstandard decoder use a bounded output size; runtimes without that API use the
+bundled decoder with a preallocated, bounded output buffer. Reference downloads
+validate all frame headers and total declared output before decoding individual
+frames, then verify the final detector digest. The decoder itself is unchanged.
 
 ```text
 MIT License

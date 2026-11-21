@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { startServer as startPluginServer } from "../lib/server.mjs";
 
 export const FIXTURE_HTML = '<!doctype html><html><head><title>鹈鹕</title><style>@keyframes ride {to {transform:translateX(80px)}} #bird{animation:ride 1s linear infinite alternate}</style></head><body><svg width="300" height="160"><circle id="bird" cx="40" cy="70" r="20" fill="#f80"/></svg><script>document.body.dataset.playing="true";</script></body></html>';
 
@@ -9,6 +10,21 @@ export async function temporary(t) {
   const dir = await mkdtemp(join(tmpdir(), "pelican-test-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   return dir;
+}
+
+export async function startTestServer(options = {}) {
+  for (let attempt = 0; attempt < 16; attempt++) {
+    const service = await startPluginServer(options);
+    if (options.port !== 0) return service;
+    try {
+      // Windows can choose an ephemeral port blocked by Fetch; rebind only that case.
+      await (await fetch(service.url)).arrayBuffer();
+      return service;
+    } catch (error) {
+      await service.close();
+      if (error.cause?.message !== "bad port" || attempt === 15) throw error;
+    }
+  }
 }
 
 export async function waitFor(check, timeout = 4000) {

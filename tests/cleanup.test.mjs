@@ -4,9 +4,8 @@ import { access, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { RunStore } from "../lib/store.mjs";
 import { Runner } from "../lib/runner.mjs";
-import { startServer } from "../lib/server.mjs";
 import { Gateway } from "../lib/gateway.mjs";
-import { fakeGateway, temporary, waitFor, FIXTURE_HTML } from "./helpers.mjs";
+import { startTestServer as startServer, fakeGateway, temporary, waitFor, FIXTURE_HTML } from "./helpers.mjs";
 
 const ids = ["f5b84bbd-e8c0-4a9e-a8d6-7909341f0a71", "b3b7d251-f3e5-4f3f-8756-333402c97068", "37cf158d-aa10-4c43-bdd0-c5b107c1b68e"];
 const record = (id, time, status = "completed") => ({ id, batchId: id, model: "fixture/one", modelName: "Fixture", status,

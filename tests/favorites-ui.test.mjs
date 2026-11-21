@@ -2,8 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { confirmClick, uiHarness } from "./ui-harness.mjs";
 import { waitFor } from "./helpers.mjs";
-import { startServer } from "../lib/server.mjs";
-import { temporary, FIXTURE_HTML } from "./helpers.mjs";
+import { startTestServer as startServer, temporary, FIXTURE_HTML } from "./helpers.mjs";
 import { fingerprintGateway, referenceFixture, numberReply } from "./fingerprint-helpers.mjs";
 const favorite = { id: "f44a6b2a-416c-497a-af1f-5ba6efa5f9cc", modelId: "fixture/one", modelName: "Fixture · Supplier", provider: "fixture", providerName: "Supplier", available: true,
   effort: "", maxTokens: 32000, prompt: "animate", concurrency: { candy: 3, fingerprint: 3, pelican: 2 }, fingerprint: { api: "auto", strict: false, serviceTier: "default", account: "" }, compareKeys: { candy: "same" } };

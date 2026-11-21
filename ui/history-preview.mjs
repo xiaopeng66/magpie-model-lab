@@ -12,11 +12,12 @@ export function renderDailyHistory(group, container, { node, text, button, model
     const gallery = node('div', 'animation-gallery history-animation-gallery'), rows = new Map();
     const navigation = node('div', 'gallery-navigation'), navigationButtons = node('div', 'segments');
     navigationButtons.setAttribute('role', 'group'); navigationButtons.setAttribute('aria-label', '历史动画时段');
-    const move = direction => {
-      for (const { lane } of rows.values()) lane.scrollBy({ left: direction * Math.max(210, lane.clientWidth * .75), behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+    const move = oldest => {
+      for (const { lane } of rows.values()) lane.scrollLeft = oldest ? Math.max(0, lane.scrollWidth - lane.clientWidth) : 0;
       updateNavigation();
     };
-    const newer = button('较新时段', () => move(-1)), older = button('较早时段', () => move(1));
+    const newer = button('最新', () => move(false)), older = button('最早', () => move(true));
+    newer.title = '直接跳到本组最新结果'; older.title = '直接跳到本组最早结果';
     function updateNavigation() {
       const lanes = [...rows.values()].map(row => row.lane);
       newer.disabled = !lanes.some(lane => lane.scrollLeft > 1);
@@ -24,7 +25,7 @@ export function renderDailyHistory(group, container, { node, text, button, model
     }
     const sizes = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateNavigation);
     navigationButtons.append(newer, older);
-    navigation.append(node('span', 'help', '每个模型一行 · 向右查看更早时段'), navigationButtons);
+    navigation.append(node('span', 'help', '每个模型一行 · 最新在左，最早在右'), navigationButtons);
     for (const model of group.modelIds) {
       const run = group.runs.find(record => record.model === model), row = node('section', 'animation-row history-animation-row'), lane = node('div', 'animation-lane history-animation-lane'), names = heading(run);
       names.classList.add('animation-model'); row.setAttribute('aria-label', `${title(run)} 的每日动画长廊`);
@@ -51,7 +52,14 @@ export function renderDailyHistory(group, container, { node, text, button, model
       }
       mount([...targets.keys()], targets); updateNavigation();
     }
-    container.append(navigation, gallery); update(group); return { update, dispose: () => sizes?.disconnect() };
+    function revealRun(id) {
+      for (const { lane, slots } of rows.values()) {
+        const slot = slots.get(id); if (!slot) continue;
+        lane.scrollLeft = Math.max(0, lane.scrollLeft + slot.cell.getBoundingClientRect().left - lane.getBoundingClientRect().left - 8);
+        updateNavigation(); return;
+      }
+    }
+    container.append(navigation, gallery); update(group); return { update, revealRun, dispose: () => sizes?.disconnect() };
   }
 
   const summaries = node('div', 'favorite-candy-grid history-daily-candy-grid'), summaryRecords = [];
@@ -127,5 +135,10 @@ export function renderDailyHistory(group, container, { node, text, button, model
     renderSelection();
   }
   update(group);
-  return { update };
+  function revealRun(id) {
+    for (const [model, times] of byModel) for (const [at, records] of times) if (records.some(run => run.id === id)) {
+      selected = { model, at }; renderSelection(); return;
+    }
+  }
+  return { update, revealRun };
 }

@@ -1,7 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { runInNewContext } from "node:vm";
+import { webcrypto } from "node:crypto";
 import { batchKey, historyBatches, historyTime, recentTestBatches } from "../lib/history-groups.mjs";
 import { renderDailyHistory } from "../ui/history-preview.mjs";
+import { createBatchRetest } from "../ui/batch-retest.mjs";
+import { openRetestDrawer } from "../ui/retest.mjs";
+import { failureInfo } from "../lib/diagnostics.mjs";
+import { createResultInsights } from "../ui/result-insights.mjs";
 
 export async function confirmClick(ui, control, accept = true) {
   const completion = control.fire("click");
@@ -61,7 +66,7 @@ class Element {
   async fire(type, details = {}) { for (const listener of [...(this.handlers[type] || []), this[`on${type}`]].filter(Boolean)) await listener({ preventDefault() {}, target: this, ...details }); }
 }
 
-export async function uiHarness({ bootstrap, detail, create, cleanup, open, openStorage, bank, accounts, exportBatch, saveBatch, favorites, writeClipboard, request, intersection = false, navigate = () => {}, search = "", viewport = { width: 1024, height: 768 }, token = "test-only-token", now = Date.now }) {
+export async function uiHarness({ bootstrap, detail, create, cleanup, open, openStorage, bank, accounts, exportBatch, saveBatch, favorites, retests, writeClipboard, request, intersection = false, navigate = () => {}, search = "", viewport = { width: 1024, height: 768 }, token = "test-only-token", now = Date.now }) {
   const source = await readFile(new URL("../ui/favorites.js", import.meta.url), "utf8") + "\n" + (await readFile(new URL("../ui/app.js", import.meta.url), "utf8")).replace(/^import .*;\r?\n/gm, "");
   const html = await readFile(new URL("../ui/index.html", import.meta.url), "utf8");
   const elements = new Map([...html.matchAll(/<([a-z][\w:-]*)\b[^>]*\bid="([^"]+)"[^>]*>/gi)].map(match => {
@@ -91,6 +96,7 @@ export async function uiHarness({ bootstrap, detail, create, cleanup, open, open
     if (path === "api/bootstrap") return Response.json(bootstrap);
     if (path === "api/events") return new Response(makeWire());
     if (path === "api/runs" && options.method === "POST") return Response.json(await create(JSON.parse(options.body), event));
+    if (path.startsWith("api/retests")) return Response.json(await retests(path, JSON.parse(options.body)));
     if (path === "api/runs/cleanup" && options.method === "POST") return Response.json(await cleanup(JSON.parse(options.body)));
     if (path === "api/storage/open" && options.method === "POST") return Response.json(await openStorage(options));
     if (path === "api/fingerprint/bank" || path === "api/fingerprint/bank/refresh") return Response.json(await bank(path, options));
@@ -126,13 +132,13 @@ export async function uiHarness({ bootstrap, detail, create, cleanup, open, open
     constructor(...args) { super(...(args.length ? args : [now()])); }
     static now() { return now(); }
   }
-  runInNewContext(source, { Date: TestDate, document, fetch, window, parent, history, structuredClone, batchKey, historyBatches, historyTime, recentTestBatches, renderDailyHistory,
+  runInNewContext(source, { Date: TestDate, crypto: webcrypto, document, fetch, window, parent, history, structuredClone, batchKey, historyBatches, historyTime, recentTestBatches, renderDailyHistory, createBatchRetest, openRetestDrawer, failureInfo, createResultInsights,
     navigator: { clipboard: { writeText: writeClipboard || (async value => copied.push(value)) } }, location, matchMedia: () => ({ matches: false }), CSS: { supports: () => true },
     URLSearchParams, Response, TextDecoder, ResizeObserver, ...(intersection ? { IntersectionObserver } : {}), innerWidth: viewport.width, innerHeight: viewport.height, setInterval() {}, setTimeout(callback) { timers.set(++nextTimer, callback); return nextTimer; }, clearTimeout(id) { timers.delete(id); },
     requestAnimationFrame(listener) { frames.set(++nextFrame, listener); return nextFrame; }, cancelAnimationFrame(id) { frames.delete(id); },
     addEventListener(type, listener) { (listeners[type] ||= []).push(listener); }, console });
   const dispatch = (type, value) => { for (const listener of listeners[type] || []) listener(value); };
-  return { elements, document, event, observed, copied, parent, location, closeStream() { controller.close(); }, timers, runTimer(id) { const callback = timers.get(id); timers.delete(id); callback?.(); }, intersect(element, visible) { intersections.get(element)?.([{ target: element, isIntersecting: visible }]); }, pendingFrames: () => frames.size,
+  return { elements, document, event, observed, copied, parent, location, window, closeStream() { controller.close(); }, timers, runTimer(id) { const callback = timers.get(id); timers.delete(id); callback?.(); }, intersect(element, visible) { intersections.get(element)?.([{ target: element, isIntersecting: visible }]); }, pendingFrames: () => frames.size,
     flushFrames() { const pending = [...frames.values()]; frames.clear(); for (const listener of pending) listener(); },
     dispatch, message(value) { dispatch("message", value); }, descendants(element, tag) {
     const out = [];

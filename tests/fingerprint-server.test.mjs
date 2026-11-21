@@ -1,8 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { startServer } from "../lib/server.mjs";
-import { temporary, waitFor } from "./helpers.mjs";
+import { startTestServer as startServer, temporary, waitFor } from "./helpers.mjs";
 import { fingerprintGateway, referenceFixture } from "./fingerprint-helpers.mjs";
 
 async function setup(t, options = {}) {

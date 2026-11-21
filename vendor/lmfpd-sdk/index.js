@@ -245,18 +245,19 @@ var VALUE_MIN = 1;
 var VALUE_MAX = 355;
 var DIMENSION = VALUE_MAX - VALUE_MIN + 1;
 var ALPHA = 0.5;
+var NUMBER_PATTERN = /[+\-\u2212]?(?:\d+\.?\d*|\.\d+)(?:[eE][+\-]?\d+)?/g;
 function parseNumbers(text) {
   const runs = [];
   let current = [];
   let previousEnd = 0;
-  for (const match of String(text).matchAll(/\d+/g)) {
+  for (const match of String(text).matchAll(NUMBER_PATTERN)) {
     const separator = String(text).slice(previousEnd, match.index);
-    const value = Number(match[0]);
+    const value = Number(match[0].replace("\u2212", "-"));
     if (current.length && /\p{L}/u.test(separator)) {
       runs.push(current);
       current = [];
     }
-    if (value >= VALUE_MIN && value <= VALUE_MAX)
+    if (Number.isInteger(value) && value >= VALUE_MIN && value <= VALUE_MAX)
       current.push(value);
     previousEnd = match.index + match[0].length;
   }
@@ -474,7 +475,7 @@ async function requestSample(options, challenge, signal, update) {
   };
   const acceptText = (text, final = false) => {
     sample.rawText = text;
-    const numbers = parseNumbers(final ? text : text.replace(/\d+$/, ""));
+    const numbers = parseNumbers(final ? text : text.replace(/[+\-\u2212]?(?:\d+\.?\d*|\.\d+)(?:[eE][+\-]?\d*)?$/, ""));
     sample.count = numbers.length;
     sample.text = text;
     if (!options.strict && numbers.length >= challenge.expected_count) {
@@ -808,11 +809,33 @@ function baseline(b, bank) {
   return mz.map((v, i) => 0.5 * v + 0.5 * ordered[i]);
 }
 function supportsSharedDetector(bank, artifact) {
-  return artifact.schema === "shared-detector-v2" && bank.built_at === artifact.bank_built_at && bank.models.length === artifact.model_ids.length && bank.models.every((m, i) => m.id === artifact.model_ids[i] && m.response_count === artifact.response_counts[i]);
+  return artifact?.schema === "shared-detector-v2" && Array.isArray(artifact.model_ids) && Array.isArray(artifact.response_counts) && bank.built_at === artifact.bank_built_at && bank.models.length === artifact.model_ids.length && bank.models.length === artifact.response_counts.length && bank.models.every((m, i) => m.id === artifact.model_ids[i] && m.response_count === artifact.response_counts[i]);
+}
+function validateSharedRanker(artifact) {
+  const count = artifact.model_ids.length;
+  // Empty banks are used for sampling-only data and cannot produce a ranking.
+  if (!count) return;
+  const vector = (v, size, positive = false) => Array.isArray(v) && v.length === size && v.every(x => Number.isFinite(x) && (!positive || x > 0));
+  const matrix = (v, rows, size) => Array.isArray(v) && (rows === null || v.length === rows) && v.every(row => vector(row, size));
+  const params = (v, sizes) => Array.isArray(v) && v.length === sizes.length && sizes.every((size, i) => vector(v[i]?.mean, size) && vector(v[i]?.scale, size, true));
+  const baselineBlock = (b, size) => b && vector(b.feature_mean, size) && vector(b.feature_scale, size, true) && matrix(b.nuisance_basis, null, size) && matrix(b.centroids, count, size);
+  const a = artifact.ranker, positional = a?.positional, environments = a?.bank?.ordered_blocks?.environment_centroids;
+  if (!a || !params(a.full_params, [355, 74]) || !params(a.head_params, [355, 74]) ||
+      !matrix(a.lda_weights, count, 429) || !vector(a.lda_bias, count) ||
+      !Array.isArray(a.references) || a.references.length !== count || !a.references.every(ref => Array.isArray(ref) && ref.length > 0 && matrix(ref, null, 429)) ||
+      !baselineBlock(a.bank?.hellinger, 355) || !baselineBlock(a.bank?.ordered_blocks, 74) ||
+      !Array.isArray(environments) || !environments.length || !environments.every(rows => matrix(rows, count, 74)) ||
+      !params(positional?.params, [355, 74, 102, 220]) || !matrix(positional?.weights, count, 751) || !vector(positional?.bias, count) ||
+      !Number.isFinite(a.blend?.frequency) || !Number.isFinite(a.blend?.positional)) {
+    throw new Error("Invalid detector scoring structure (评分结构、维度或数值无效).");
+  }
+  // Finite coefficients alone do not exclude arithmetic overflow during scoring.
+  const probe = Array.from({ length: 320 }, (_, i) => i % 2 ? 340 - i % 13 : 12 + i % 17);
+  rankSharedNumbers([probe, probe, probe], artifact);
 }
 function calibrateRanking(ranking, artifact) {
   const head = artifact.calibration, binding = head?.binding;
-  if (!head || !binding || head.schema !== "shared-confidence-v2" || head.method !== "ranking-temperature" || !Number.isFinite(head.tau) || head.tau < 0.001 || head.tau > 1000 || binding.base_sha256 !== artifact.base_sha256 || binding.reference_sha256 !== artifact.source_reference_sha256 || binding.model_ids.length !== ranking.length || ranking.length !== artifact.model_ids.length || !ranking.every(Number.isFinite) || !binding.model_ids.every((id, i) => id === artifact.model_ids[i]))
+  if (!head || !binding || head.schema !== "shared-confidence-v2" || head.method !== "ranking-temperature" || !Number.isFinite(head.tau) || head.tau < 0.001 || head.tau > 1000 || binding.base_sha256 !== artifact.base_sha256 || binding.reference_sha256 !== artifact.source_reference_sha256 || !Array.isArray(binding.model_ids) || binding.model_ids.length !== ranking.length || ranking.length !== artifact.model_ids.length || !ranking.every(Number.isFinite) || !binding.model_ids.every((id, i) => id === artifact.model_ids[i]))
     return null;
   const logits = ranking.map((score) => head.tau * score);
   const maximum = Math.max(...logits), weights = logits.map((value) => Math.exp(value - maximum)), sum = weights.reduce((a, b) => a + b, 0);
@@ -856,13 +879,13 @@ function analyzeSharedOutputs(outputs, bank, artifact, options = {}) {
   const parsed = outputs.map((o) => parseNumbers(o.text));
   const diagnostics = outputs.map((o, index) => {
     const minimum = Math.max(80, Math.ceil((o.expected_count || 0) * 0.55));
-    const raw = Array.from(o.text.matchAll(/-?\d+/g), (m) => Number(m[0]));
+    const raw = Array.from(o.text.matchAll(NUMBER_PATTERN), (m) => Number(m[0].replace("\u2212", "-")));
     return {
       index,
       parsed_numbers: parsed[index].length,
       minimum_numbers: minimum,
       accepted: parsed[index].length >= minimum,
-      raw_out_of_range_count: raw.filter((n) => n < 1 || n > 355).length
+      raw_out_of_range_count: raw.filter((n) => !Number.isInteger(n) || n < 1 || n > 355).length
     };
   });
   const used = diagnostics.filter((d) => d.accepted).length;
@@ -1841,6 +1864,7 @@ function referenceData(bank, detector) {
   if (!Array.isArray(bank?.models) || !supportsSharedDetector(bank, detector)) {
     throw new Error("The reference bank does not match its detector.");
   }
+  validateSharedRanker(detector);
   return { bank, detector };
 }
 async function readDir(dir) {

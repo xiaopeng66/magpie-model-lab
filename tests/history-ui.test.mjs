@@ -9,6 +9,28 @@ const at = "2026-11-17T09:00:00.000Z";
 const bootstrap = runs => ({ models: [model("fixture/one"), model("fixture/two")], runs, defaultPrompt: "prompt", candyAvailable: true, historyTimeZone: "UTC" });
 const childrenWith = (ui, id, name) => ui.descendants(ui.elements.get(id)).filter(element => element.className === name);
 
+test("daily animation endpoint buttons send every model lane directly to the oldest or newest end", async () => {
+  const runs = ["one", "two"].flatMap(name => ["09", "12", "18"].map(hour => {
+    const time = `2026-11-17T${hour}:00:00.000Z`;
+    return { ...record(`${name}-${hour}`, `batch-${hour}`, "pelican", "completed", time, name), source: "automatic", scheduledAt: time };
+  }));
+  const ui = await uiHarness({ bootstrap: bootstrap(runs), detail: id => runs.find(run => run.id === id), search: "?view=history" });
+  const row = await waitFor(() => childrenWith(ui, "history-list", "history-row")[0]); await row.fire("click");
+  const controls = ui.descendants(ui.elements.get("history-results"), "button");
+  const newest = controls.find(control => control.textContent === "最新"), oldest = controls.find(control => control.textContent === "最早");
+  assert.ok(newest && oldest, "History gallery needs direct endpoint controls");
+  const lanes = ui.descendants(ui.elements.get("history-results")).filter(element => element.className.split(/\s+/).includes("history-animation-lane"));
+  assert.equal(lanes.length, 2); assert.equal(newest.disabled, true);
+  for (const lane of lanes) lane.scrollLeft = 210;
+  await oldest.fire("click");
+  for (const lane of lanes) assert.equal(lane.scrollLeft, lane.scrollWidth - lane.clientWidth, "The oldest button must not stop at a partial page");
+  assert.equal(oldest.disabled, true); assert.equal(newest.disabled, false);
+  await newest.fire("click");
+  for (const lane of lanes) assert.equal(lane.scrollLeft, 0);
+  assert.equal(newest.disabled, true); assert.equal(oldest.disabled, false);
+  assert.equal(ui.elements.get("history-filter").value, "");
+});
+
 test("a history row closes its result when pressed again", async () => {
   const run = record("manual-run", "manual-batch", "candy", "completed", at);
   const ui = await uiHarness({ bootstrap: bootstrap([run]), detail: async () => run, search: "?view=history" });
@@ -86,7 +108,8 @@ test("an older active manual batch stays reachable and joins the five recent bat
   assert.deepEqual(queue().map(entry => entry.dataset.batchId), ["new-batch", "older-batch"]);
   const recent = () => childrenWith(ui, "candy-recent", "recent-batch");
   assert.deepEqual(recent().map(entry => entry.dataset.batchId), ["batch-0", "batch-1", "batch-2", "batch-3", "batch-4"]);
-  assert.deepEqual(recent()[0].children[1].children.map(card => card.dataset.runId), ["two-0", "one-0"]);
+  const firstGrid = recent()[0].children.find(element => element.className === "results-grid");
+  assert.deepEqual(firstGrid.children.map(card => card.dataset.runId), ["two-0", "one-0"]);
   ui.event("run", { run: { ...running, status: "completed" } });
   await waitFor(() => recent()[0].dataset.batchId === "older-batch");
   assert.deepEqual(queue().map(entry => entry.dataset.batchId), ["new-batch"]);

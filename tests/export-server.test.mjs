@@ -5,9 +5,8 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { temporary, fakeGateway, waitFor, FIXTURE_HTML } from './helpers.mjs';
+import { startTestServer as startServer, temporary, fakeGateway, waitFor, FIXTURE_HTML } from './helpers.mjs';
 import { RunStore } from '../lib/store.mjs';
-import { startServer } from '../lib/server.mjs';
 import { saveJSON } from '../lib/export.mjs';
 
 const at = new Date().toISOString();

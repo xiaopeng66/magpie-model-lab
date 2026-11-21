@@ -1,9 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { startServer } from "../lib/server.mjs";
 import { confirmClick, uiHarness } from "./ui-harness.mjs";
-import { waitFor, fakeGateway, temporary, FIXTURE_HTML } from "./helpers.mjs";
+import { startTestServer as startServer, waitFor, fakeGateway, temporary, FIXTURE_HTML } from "./helpers.mjs";
 
 const id = "70158f4b-7844-459d-85dc-3c1cdd0d0164";
 const run = { id, batchId: id, model: "fixture/one", modelName: "Fixture", prompt: "test", maxTokens: 1024, effort: "",

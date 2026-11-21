@@ -1,5 +1,9 @@
 import { batchKey, historyBatches, historyTime, recentTestBatches } from '../lib/history-groups.mjs';
 import { renderDailyHistory } from './history-preview.mjs';
+import { createBatchRetest } from './batch-retest.mjs';
+import { openRetestDrawer } from './retest.mjs';
+import { failureInfo } from '../lib/diagnostics.mjs';
+import { createResultInsights } from './result-insights.mjs';
 
 (() => {
   "use strict";
@@ -19,9 +23,10 @@ import { renderDailyHistory } from './history-preview.mjs';
     history: { batchId: "", ids: [], results: "history-results", scroll: "history-preview-scroll", note: "history-batch-note", empty: "history-empty", cancel: "history-cancel" },
   };
   const states = { queued: "排队中", running: "生成中", completed: "已完成", invalid: "非完整 HTML", truncated: "输出截断", cancelled: "已取消", error: "生成失败", interrupted: "已中断" };
+  const sampleStates = { queued: "排队中", waiting: "等待响应", streaming: "采样中", complete: "已完成", truncated: "已截取", failed: "失败", cancelled: "已取消" };
   const active = (run) => ["queued", "running"].includes(run.status);
   let defaults = "", activeView = "current", batchCleanup = false, openDataDir = false, cleaning = false, streaming = false, reconnecting = false, renderFrame = null;
-  let executionView = "current", creating = false, addingFavorites = false, fingerprintAvailable = false, batchCancel = false, batchExport = false, bankUpdating = false, cachedAccounts = [], accountsLoaded = false, accountsLoading = false;
+  let executionView = "current", creating = false, addingFavorites = false, fingerprintAvailable = false, batchCancel = false, batchExport = false, retestAvailable = false, bankUpdating = false, cachedAccounts = [], accountsLoaded = false, accountsLoading = false;
   const concurrencyDrafts = { current: "2", fingerprint: "3", candy: "3" };
   const tokenLabel = value => value === 0 ? "不设输出上限" : `${value ?? 64000} Token`;
   const concurrencyLabel = run => run.concurrency === 0 ? "不设并行上限" : `并行 ${run.concurrency ?? (run.kind === "fingerprint" || run.kind === "candy" ? 3 : 2)}`;
@@ -112,7 +117,8 @@ import { renderDailyHistory } from './history-preview.mjs';
         reconnecting = true;
         const params = new URLSearchParams(location.search);
         if (views.current.ids[0]) params.set("run", views.current.ids[0]); else params.delete("run");
-        if (views.history.ids[0]) params.set("history", views.history.ids[0]); else params.delete("history");
+        const historyRun = views.history.visibleIds?.[0] || views.history.ids[0];
+        if (historyRun) params.set("history", historyRun); else params.delete("history");
         if (views.fingerprint.ids[0]) params.set("fingerprint", views.fingerprint.ids[0]); else params.delete("fingerprint");
         if (views.candy.ids[0]) params.set("candy", views.candy.ids[0]); else params.delete("candy");
         params.set("mode", executionView);
@@ -189,10 +195,17 @@ import { renderDailyHistory } from './history-preview.mjs';
         datalist.id = `accounts-${[...selected.keys()].indexOf(id)}`;
         account.setAttribute("list", datalist.id); account.setAttribute("aria-label", `${modelLabel(model, true)} 的固定账号`);
         account.placeholder = "账号 ID，可选"; account.value = selectedAccounts.get(id) || ""; account.maxLength = 256;
-        for (const item of cachedAccounts.filter(item => item.provider === model.provider)) { const option = node("option", "", item.name); option.value = item.id; datalist.append(option); }
+        datalist.dataset.provider = model.provider; renderAccountOptions(datalist);
         account.addEventListener("input", () => selectedAccounts.set(id, account.value.trim()));
         accountRow.append(account, datalist); row.append(accountRow);
       }
+    }
+  }
+
+  function renderAccountOptions(datalist) {
+    datalist.replaceChildren();
+    for (const item of cachedAccounts.filter(item => item.provider === datalist.dataset.provider)) {
+      const option = node("option", "", item.name); option.value = item.id; datalist.append(option);
     }
   }
 
@@ -296,6 +309,7 @@ import { renderDailyHistory } from './history-preview.mjs';
     if (dailyPreview) dailyPreview.update(historyGroups.get(views.history.batchId));
     renderRunningBatches();
     for (const name of ['current', 'fingerprint', 'candy']) renderRecentBatches(name);
+    refreshResultInsights();
   }
 
   function historyNotice(text, failed = false) { $("history-status").textContent = text; $("history-status").hidden = !text; $("history-status").dataset.error = String(failed); }
@@ -378,6 +392,11 @@ import { renderDailyHistory } from './history-preview.mjs';
     text($("generate-label"), creating ? "创建中…" : candy ? "开始测试" : fingerprint ? "开始检测" : "开始生成");
     $("fingerprint-unavailable").hidden = fingerprintAvailable;
     $("bank-refresh").disabled = !fingerprintAvailable || bankUpdating;
+    for (const view of Object.values(views)) {
+      view.retest?.setBusy(creating);
+      for (const entry of view.recentItems?.values() || []) entry.retest.setBusy(creating);
+    }
+    if (resultDetail) resultDetail.retest.disabled = creating || active(runs.get(resultDetail.id) || {});
   }
 
   function refreshView(name) {
@@ -391,6 +410,51 @@ import { renderDailyHistory } from './history-preview.mjs';
       $("history-detail").hidden = !view.ids.length;
       const group = historyGroups.get(view.batchId); text($('history-preview-title'), group?.source === 'automatic' ? `${kindLabel(group.kind)}每日预览` : '批次预览');
     }
+    refreshBatchRetest(name);
+  }
+
+  function locateResultCard(id, name) {
+    const root = cards.get(`${name}:${id}`)?.root, scroll = $(views[name].scroll); if (!root) return;
+    const top = root.getBoundingClientRect().top;
+    if (innerWidth <= 720) window.scrollBy({ top: top - 12, behavior: "instant" });
+    else scroll.scrollTop = Math.max(0, scroll.scrollTop + top - scroll.getBoundingClientRect().top - 12);
+    root.setAttribute("tabindex", "-1"); root.focus({ preventScroll: true }); root.dataset.sourceFocus = "true";
+    setTimeout(() => { delete root.dataset.sourceFocus; }, 1200);
+  }
+
+  function openSourceRecord(id) {
+    const run = runs.get(id); if (!run) return;
+    $("history-filter").value = run.kind || "pelican";
+    $("history-source").value = run.source === "automatic" ? "automatic" : run.favoriteId ? "favorites" : "manual";
+    setView("history"); renderHistory(); showBatch(historyKeys.get(id), "history");
+    dailyPreview?.revealRun?.(id); locateResultCard(id, "history"); rememberView({ history: id });
+  }
+
+  function makeBatchRetest() {
+    const retest = createBatchRetest(document, { onRetest: openRetest, onSource: openSourceRecord });
+    retest.setBusy(creating); return retest;
+  }
+
+  function refreshBatchRetest(name) {
+    const view = views[name], actions = $(`${name}-batch-actions`), sourceHost = $(`${name}-batch-source`); if (!actions) return;
+    const members = view.ids.map(id => runs.get(id)).filter(Boolean), automatic = name === "history" && members.some(run => run.source === "automatic");
+    if (!view.retest) { view.retest = makeBatchRetest(); actions.prepend(view.retest.button); sourceHost.append(view.retest.source); }
+    const source = members.find(run => run.retest)?.retest;
+    view.retest.update(automatic ? [] : members, { canRetest: retestAvailable, sourceAvailable: runs.has(source?.sourceRunId) });
+    sourceHost.hidden = view.retest.source.hidden;
+  }
+
+  function openRetest(runIds, origin) {
+    if (!retestAvailable || creating || !runIds.length) return;
+    return openRetestDrawer({ document, openDrawer: favoritesUI.openDrawer, closeDrawer: favoritesUI.closeDrawer, api, runIds, origin,
+      names: resultNames, kindLabel, onSubmitting: value => { creating = value; updateSettings(); }, onError: message => notice(`复测未创建：${message}`),
+      onCreated: (result, wasOpen) => {
+        for (const run of result.runs) updateRun(run, false);
+        renderHistory();
+        if (!wasOpen) { notice("复测批次已创建，可在正在生成的列表或历史记录中查看。"); return; }
+        const kind = result.runs[0]?.kind || "pelican", target = kind === "pelican" ? "current" : kind;
+        setView(target); showBatch(result.batchId, target); $(views[target].scroll).scrollTop = 0;
+      } });
   }
 
   function renderRunningBatches() {
@@ -433,11 +497,14 @@ import { renderDailyHistory } from './history-preview.mjs';
       let entry = items.get(group.id);
       if (!entry) {
         const root = node('section', 'recent-batch'), heading = node('div', 'recent-batch-heading'), title = node('h3'), meta = node('span', 'help'), grid = node('div', 'results-grid');
-        root.dataset.batchId = group.id; heading.append(title, meta); root.append(heading, grid);
-        entry = { root, title, meta, grid }; items.set(group.id, entry);
+        const retest = makeBatchRetest();
+        root.dataset.batchId = group.id; heading.append(title, meta, retest.button); root.append(heading, retest.source, grid);
+        entry = { root, title, meta, grid, retest }; items.set(group.id, entry);
       }
       text(entry.title, `历史批次 ${index + 1}`);
       text(entry.meta, `${batchWhen(group.createdAt)} · ${group.modelIds.length} 个模型 · ${group.runs.length} 份结果`);
+      const source = group.runs.find(run => run.retest)?.retest;
+      entry.retest.update(group.runs, { canRetest: retestAvailable, sourceAvailable: runs.has(source?.sourceRunId) });
       entry.root.setAttribute('aria-label', `${entry.title.textContent}，${entry.meta.textContent}`);
       for (const [cardIndex, run] of group.runs.entries()) {
         renderCard(run.id, name); const root = cards.get(`${name}:${run.id}`)?.root;
@@ -449,8 +516,11 @@ import { renderDailyHistory } from './history-preview.mjs';
 
   function renderShown(id) {
     pendingRenders.delete(id);
-    for (const [name, view] of Object.entries(views)) if (view.ids.includes(id) || view.recentIds?.includes(id)) renderCard(id, name);
-    if (resultDetail?.id === id) renderResultDetail();
+    for (const [name, view] of Object.entries(views)) if (view.ids.includes(id) || view.recentIds?.includes(id)) {
+      renderCard(id, name); view.retest?.updateRun(runs.get(id));
+      for (const entry of view.recentItems?.values() || []) entry.retest.updateRun(runs.get(id));
+    }
+    if (resultDetail?.id === id) renderResultDetail(); else refreshResultInsights();
     favoritesUI.progress(id);
   }
 
@@ -472,7 +542,7 @@ import { renderDailyHistory } from './history-preview.mjs';
     if (value.kind === "fingerprint" && Number.isFinite(value.revision) && Number.isFinite(prior.revision) && value.revision < prior.revision) return;
     const historyChanged = !prior.id || ["status", "batchId", "roundId", "scheduledAt", "createdAt", "model", "modelName", "source", "kind"].some(key => Object.hasOwn(value, key) && value[key] !== prior[key]);
     Object.assign(prior, value);
-    if (changed && !active(prior)) prior.loaded = false;
+    if (changed && !active(prior)) { prior.loaded = false; prior.loadError = ""; }
     runs.set(value.id, prior);
     for (const [name, view] of Object.entries(views)) {
       if ((name === 'history' ? historyKeys.get(prior.id) : batchKey(prior)) === view.batchId && (name === "history" || name === "favorites" || (prior.kind || "pelican") === (name === "current" ? "pelican" : name)) && !view.ids.includes(value.id)) view.ids.push(value.id);
@@ -627,9 +697,10 @@ import { renderDailyHistory } from './history-preview.mjs';
     card.usage = makeUsage();
     card.errorSummary = node("div", "error-summary"); card.errorSummary.hidden = true;
     card.errorLabel = node("strong");
+    card.errorHint = node("span", "card-error-hint");
     card.errorButton = button("查看错误详情", () => { openResultDetail(id, card.errorButton, card); });
     card.errorButton.setAttribute("aria-haspopup", "dialog"); card.errorButton.setAttribute("aria-controls", "favorite-drawer");
-    card.errorSummary.append(card.errorLabel, card.errorButton); card.zone.append(card.errorSummary);
+    card.errorSummary.append(card.errorLabel, card.errorHint, card.errorButton); card.zone.append(card.errorSummary);
     const footer = node("div", "card-footer"); footer.append(badge, controls);
     root.classList.add("animation-card"); root.append(header, card.zone, card.usage, footer);
     cards.set(`${view}:${id}`, card); $(views[view].results).append(root); return card;
@@ -680,7 +751,9 @@ import { renderDailyHistory } from './history-preview.mjs';
     card.answer.hidden = card.verdict.hidden = active(run); text(card.loadingLabel, states[run.status]);
     text(card.answer, String(run.candy?.answer ?? "—"));
     card.answer.title = String(run.candy?.answer ?? "—");
-    text(card.verdict, candyVerdictLabel(run));
+    const diagnostic = failureInfo(run);
+    text(card.verdict, diagnostic?.label || candyVerdictLabel(run)); card.verdict.title = diagnostic?.advice || candyVerdictLabel(run);
+    card.verdict.dataset.tone = diagnostic?.tone || (candyVerdict(run) === "match" ? "success" : "muted");
     text(card.time, when(run.createdAt)); card.cancel.hidden = !active(run);
   }
 
@@ -692,24 +765,26 @@ import { renderDailyHistory } from './history-preview.mjs';
   function renderCardHeading(card, run) {
     const [name, provider] = resultNames(run);
     text(card.title, name);
-    card.title.title = `${run.modelName || run.model}\n${run.model}`;
+    card.title.title = `${run.modelName || run.model || name}${run.model ? `\n${run.model}` : ""}`;
     text(card.provider, provider); card.provider.title = provider;
   }
 
   function renderFingerprintCard(id, view) {
     const run = runs.get(id), card = cards.get(`${view}:${id}`) || makeFingerprintCard(id, view), info = run.fingerprint || {};
+    const diagnostic = failureInfo(run);
     renderCardHeading(card, run); renderUsage(card.usage, run);
     card.root.dataset.state = run.status;
     const label = active(run) ? run.status === "running" ? "采样中" : "排队中" : info.decision === "partial" ? "部分结果" : info.decision === "scored" ? "已完成" : run.status === "invalid" ? "无法评分" : ({ cancelled: "已取消", error: "检测失败", interrupted: "已中断" })[run.status] || "已完成";
-    card.badge.className = `badge ${run.status}`; text(card.badge, label);
+    card.badge.className = `badge ${run.status}`; text(card.badge, diagnostic?.label || label); card.badge.title = diagnostic?.advice || label;
     text(card.caption, active(run) ? `采样 ${info.completed || 0}/3` : info.prediction ? "最接近的候选" : "检测结果");
-    text(card.prediction, active(run) ? (run.status === "running" ? "正在采样" : "等待采样") : info.prediction || label);
-    text(card.family, active(run) ? `${info.valid || 0} 条有效回答` : info.family || (run.status === "error" ? "展开详情查看原因" : "3 次独立采样"));
+    text(card.prediction, active(run) ? (run.status === "running" ? "正在采样" : "等待采样") : diagnostic?.label || info.prediction || label);
+    card.prediction.dataset.tone = diagnostic?.tone || "muted";
+    text(card.family, active(run) ? `${info.valid || 0} 条有效回答` : diagnostic?.advice || info.family || "3 次独立采样");
     card.prediction.title = card.prediction.textContent; card.family.title = card.family.textContent;
     for (const [index, dot] of card.dots.entries()) {
       const sample = info.samples?.[index]; dot.dataset.state = sample?.state || "queued";
       const count = `${sample?.count ?? 0}/${sample?.expectedCount ?? "—"}`;
-      text(dot, count); dot.title = `采样 ${index + 1}：${count} · ${{ queued: "排队中", waiting: "等待响应", streaming: "采样中", complete: "已完成", truncated: "已截取", failed: "失败", cancelled: "已取消" }[dot.dataset.state] || dot.dataset.state}`;
+      text(dot, count); dot.title = `采样 ${index + 1}：${count} · ${sampleStates[dot.dataset.state] || dot.dataset.state}`;
       dot.setAttribute("aria-label", dot.title);
     }
     card.cancel.hidden = !active(run); card.cancel.disabled = card.cancelling;
@@ -773,13 +848,16 @@ import { renderDailyHistory } from './history-preview.mjs';
     detail.source.setAttribute("tabindex", "0");
     detail.stats = makeStats(detail, kind === "fingerprint" ? "首次响应" : "首次正文");
     detail.parameters = node("p", "help detail-evidence"); detail.file = node("p", "path");
-    content.append(node("h3", "detail-name", name), metadata, detail.usage, tabs);
+    detail.insights = createResultInsights(document, { onSource: openSourceRecord, timeZone: historyTimeZone });
+    content.append(node("h3", "detail-name", name), metadata, detail.usage, detail.insights.root, tabs);
     if (failure) {
       failure.append(node("summary", "", "原始错误详情"), message);
       failure.open = fromError; failure.hidden = true;
       if (fromError) content.insertBefore(failure, tabs);
     }
     const footer = $("drawer-footer");
+    detail.retest = button("复测此条", () => openRetest([run.id], detail.retest));
+    detail.retest.hidden = !retestAvailable; footer.append(detail.retest);
     if (kind === "pelican") {
       detail.preview = { id: run.id, zone: node("div", "preview-zone reading-preview"), width: card.width, height: card.height };
       content.append(detail.preview.zone); previewCards.set(detail.preview.zone, detail.preview);
@@ -818,6 +896,8 @@ import { renderDailyHistory } from './history-preview.mjs';
   function renderResultDetail() {
     const detail = resultDetail, run = runs.get(detail?.id); if (!run) return;
     const { mode, kind, card, preview } = detail;
+    detail.retest.disabled = active(run) || creating;
+    detail.retest.title = active(run) ? "测试结束后可按原条件复测" : "读取本条原条件，核对后重新测试";
     for (const [key, tab] of detail.tabs) tab.setAttribute("aria-pressed", String(key === mode));
     renderUsage(detail.usage, run); renderStats(detail, run);
     text(detail.elapsed, `耗时 ${detail.metrics[0].textContent}`);
@@ -828,7 +908,8 @@ import { renderDailyHistory } from './history-preview.mjs';
       if (mode !== "content") output = run.html || "";
       if (mode === "preview" && run.status === "completed" && !run.loadError) placeholder = card.stopped ? "已停止" : run.loaded ? "暂无动画预览" : "正在读取预览…";
       const url = mode === "preview" && run.status === "completed" && !card.stopped ? run.previewUrl : "";
-      if (preview.url !== url) { preview.frame?.remove(); preview.frame = null; preview.error = ""; }
+      if (preview.sourceUrl !== run.previewUrl) { preview.error = ""; preview.sourceUrl = run.previewUrl; }
+      if (preview.url !== url) { preview.frame?.remove(); preview.frame = null; }
       preview.zone.hidden = !url; preview.url = url;
       if (url && !preview.frame) {
         preview.frame = node("iframe"); preview.frame.title = `${card.title.textContent} 的动画预览`;
@@ -840,11 +921,11 @@ import { renderDailyHistory } from './history-preview.mjs';
     } else if (kind === "fingerprint") {
       const info = run.fingerprint || {};
       output = mode === "route" ? JSON.stringify((run.samples || []).map(sample => sample.provenance || {}), null, 2) : mode === "analysis" ? (run.analysis ? JSON.stringify(run.analysis, null, 2) : "") :
-        (run.samples || []).map((sample, index) => `采样 ${index + 1} · ${sample.count}/${sample.expected_count} · ${sample.state}\n${sample.raw_text || "暂无回答"}${sample.error ? "\n" + sample.error : ""}`).join("\n\n");
+        (run.samples || []).map((sample, index) => `采样 ${index + 1} · ${sample.count ?? "—"}/${sample.expected_count ?? run.challenges?.[index]?.expected_count ?? "—"} · ${sampleStates[sample.state] || "状态未知"}\n${sample.raw_text || "暂无回答"}${sample.error ? "\n" + sample.error : ""}`).join("\n\n");
       if (run.analysis !== detail.renderedAnalysis) {
         detail.renderedAnalysis = run.analysis; detail.ranking.replaceChildren();
-        for (const [index, item] of (run.analysis?.results || []).slice(0, 5).entries()) { const row = node("div", "ranking-row"); row.title = item.model;
-          row.append(node("span", "", `${index + 1}. ${item.display_name || item.model}`), node("span", "", Number.isFinite(item.probability) ? `${(item.probability * 100).toFixed(1)}%` : `分数 ${Number(item.score).toFixed(2)}`)); detail.ranking.append(row); }
+        for (const [index, item] of (run.analysis?.results || []).slice(0, 5).entries()) { const row = node("div", "ranking-row"), name = item.display_name || item.model || "未命名候选"; row.title = item.model || name;
+          row.append(node("span", "", `${index + 1}. ${name}`), node("span", "", Number.isFinite(item.probability) ? `${(item.probability * 100).toFixed(1)}%` : Number.isFinite(item.score) ? `分数 ${item.score.toFixed(2)}` : "—")); detail.ranking.append(row); }
       }
       const probability = info.probability == null ? "概率不可用" : `库内概率 ${(info.probability * 100).toFixed(1)}%`;
       text(detail.parameters, `${parameters} · ${run.api || "自动接口"}\n${probability} · ${info.verified ? "路由已核实" : "路由未核实"}\n参考库 ${run.bank?.builtAt || "—"}\n${run.bank?.sha256 || ""}\n候选仅供参考库内比较，不能证明模型身份。`);
@@ -863,7 +944,13 @@ import { renderDailyHistory } from './history-preview.mjs';
     text(detail.message, run.error || run.loadError || preview?.error || card?.previewError || "");
     (detail.failure || detail.message).hidden = !detail.message.textContent;
     detail.retry.hidden = !run.loadError;
+    refreshResultInsights();
     if (!run.loaded && !run.loading && !run.loadError) return loadDetail(detail.id);
+  }
+
+  function refreshResultInsights() {
+    const detail = resultDetail, run = runs.get(detail?.id); if (!run || !detail.insights) return;
+    detail.insights.update(run, [...runs.values()], { loadError: run.loadError, previewError: detail.preview?.error || detail.card?.previewError });
   }
 
   async function replay(card) {
@@ -878,6 +965,7 @@ import { renderDailyHistory } from './history-preview.mjs';
 
   async function loadDetail(id) {
     const run = runs.get(id); if (!run || run.loading) return;
+    const startedActive = active(run);
     run.loading = true;
     try {
       const detail = await api(`api/runs/${id}`);
@@ -905,7 +993,9 @@ import { renderDailyHistory } from './history-preview.mjs';
       renderShown(id);
     } catch (err) {
       if (runs.get(id) !== run) return;
-      run.loading = false; run.loadError = err.message; renderShown(id);
+      run.loading = false; run.loadError = startedActive && !active(run) ? "" : err.message;
+      if (!run.loadError) run.loaded = false;
+      renderShown(id);
     }
   }
 
@@ -920,8 +1010,11 @@ import { renderDailyHistory } from './history-preview.mjs';
     card.badge.className = `badge ${run.status}`; text(card.badge, ({ invalid: "无效输出", truncated: "已截断" })[run.status] || states[run.status] || run.status);
     card.badge.title = states[run.status] || run.status;
     const message = run.error || run.loadError || card.previewError;
-    card.errorSummary.hidden = !message;
-    text(card.errorLabel, message ? (run.status === "completed" ? "预览异常" : states[run.status]) : "");
+    const diagnostic = failureInfo(run, { loadError: run.loadError, previewError: card.previewError });
+    card.errorSummary.hidden = !message && !diagnostic?.abnormal;
+    card.errorSummary.dataset.tone = diagnostic?.tone || "error";
+    text(card.errorLabel, diagnostic?.label || (message ? run.status === "completed" ? "预览异常" : states[run.status] : ""));
+    text(card.errorHint, diagnostic?.advice || ""); card.errorHint.title = diagnostic?.advice || "";
     card.cancel.hidden = !active(run);
     card.cancel.disabled = card.cancelling;
     card.restart.hidden = card.open.hidden = run.status !== "completed";
@@ -1065,7 +1158,7 @@ import { renderDailyHistory } from './history-preview.mjs';
     const status = $("account-status"); status.hidden = !$("fp-pin").checked || accountsLoaded || !fingerprintAvailable;
     if (!$("fp-pin").checked || accountsLoaded || accountsLoading || !fingerprintAvailable) return;
     accountsLoading = true; text(status, "正在读取缓存账号…");
-    try { cachedAccounts = (await api("api/fingerprint/accounts")).accounts; accountsLoaded = true; status.hidden = true; text(status, ""); renderSelected(); }
+    try { cachedAccounts = (await api("api/fingerprint/accounts")).accounts; accountsLoaded = true; status.hidden = true; text(status, ""); for (const datalist of $("selected-models").querySelectorAll("datalist")) renderAccountOptions(datalist); }
     catch { status.hidden = !$("fp-pin").checked; text(status, "未获取缓存账号，可手动输入 ID"); }
     finally { accountsLoading = false; }
   });
@@ -1292,7 +1385,7 @@ import { renderDailyHistory } from './history-preview.mjs';
     batchCleanup = boot.batchCleanup === true;
     favoritesAvailable = boot.favoritesAvailable === true; candyAvailable = boot.candyAvailable === true;
     text($("candy-prompt"), boot.candyPrompt || "重新开启插件后加载题面"); text($("candy-version"), `可选形状版 · ${boot.candyVersion || "v1"}`);
-    fingerprintAvailable = boot.fingerprintAvailable === true; batchCancel = boot.batchCancel === true; batchExport = boot.batchExport === true;
+    fingerprintAvailable = boot.fingerprintAvailable === true; batchCancel = boot.batchCancel === true; batchExport = boot.batchExport === true; retestAvailable = boot.retestAvailable === true;
     renderBank(boot.bankStatus); updateSettings();
     openDataDir = boot.openDataDir === true; $("open-data-dir").disabled = !openDataDir;
     $("open-data-dir").title = openDataDir ? `打开保存文件夹：${boot.dataDir}` : "重新开启插件后可打开保存文件夹";
@@ -1300,14 +1393,16 @@ import { renderDailyHistory } from './history-preview.mjs';
     if (!batchCleanup) historyNotice("单批删除需要重新开启插件；当前仍可查看历史和使用批量清理。");
     historyTimeZone = boot.historyTimeZone;
     updateModels(boot.models); for (const run of boot.runs) runs.set(run.id, run); renderHistory(); favoritesUI.init(boot);
-    if (boot.error) notice(boot.error);
+    const startupErrors = [boot.error, boot.favoritesError ? `${boot.favoritesError}。自动测试已停用，原配置已保留；历史和手动测试仍可使用。恢复配置后请重新开启插件。` : ""].filter(Boolean);
+    if (startupErrors.length) notice(startupErrors.join("；"));
     for (const [name, kind, param] of [["current", "pelican", "run"], ["fingerprint", "fingerprint", "fingerprint"], ["candy", "candy", "candy"]]) {
       const pinned = runs.get(query.get(param)), matches = run => run.source !== "automatic" && (run.kind || "pelican") === kind;
       const run = pinned && matches(pinned) ? pinned : boot.runs.find(matches); if (run) showBatch(batchKey(run), name);
     }
     if (["fingerprint", "candy"].includes(query.get("mode"))) setView(query.get("mode"));
     if (tabViews.includes(query.get("view"))) setView(query.get("view"));
-    const historyId = historyKeys.get(query.get("history")); if (historyId) showBatch(historyId, "history");
+    const historyRun = query.get("history"), historyId = historyKeys.get(historyRun);
+    if (historyId) { showBatch(historyId, "history"); dailyPreview?.revealRun?.(historyRun); }
     events();
     } catch (err) {
       initialized = false; updateSettings(); notice(err.message); $("connection").setAttribute("aria-label", "连接失败"); $("connection").title = "连接失败";

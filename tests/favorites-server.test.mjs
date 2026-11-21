@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { startServer } from "../lib/server.mjs";
-import { temporary, waitFor, FIXTURE_HTML } from "./helpers.mjs";
+import { startTestServer as startServer, temporary, waitFor, FIXTURE_HTML } from "./helpers.mjs";
 import { fingerprintGateway, referenceFixture, numberReply } from "./fingerprint-helpers.mjs";
 
 test("favorites and pause controls remain accessible when the model gateway is offline", async t => {

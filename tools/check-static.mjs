@@ -46,7 +46,7 @@ const bootCSS = boot.match(/<style>([\s\S]*?)<\/style>/)?.[1];
 assert.ok(bootCSS, "Missing entry page styles");
 await mkdir(output, { recursive: true });
 await writeFile(join(output, "boot.css"), bootCSS);
-const styleBuild = await Bun.build({ entrypoints: [join(root, "ui/style.css"), join(root, "ui/polish.css"), join(output, "boot.css")], target: "browser", write: false });
+const styleBuild = await Bun.build({ entrypoints: [join(root, "ui/style.css"), join(root, "ui/polish.css"), join(root, "ui/enhancements.css"), join(output, "boot.css")], target: "browser", write: false });
 assert.equal(styleBuild.success, true, JSON.stringify(styleBuild.logs));
 assert.equal(styleBuild.logs.length, 0);
 const theme = block => Object.fromEntries([...block.matchAll(/(--[\w-]+)\s*:\s*(#[0-9a-f]{6})\s*;/gi)].map(match => [match[1], match[2]]));

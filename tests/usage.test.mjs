@@ -5,8 +5,7 @@ import { Runner } from "../lib/runner.mjs";
 import { RunStore } from "../lib/store.mjs";
 import { summary } from "../lib/result.mjs";
 import { sampleFingerprint } from "../lib/fingerprint-sample.mjs";
-import { startServer } from "../lib/server.mjs";
-import { fakeGateway, temporary, waitFor, FIXTURE_HTML } from "./helpers.mjs";
+import { startTestServer as startServer, fakeGateway, temporary, waitFor, FIXTURE_HTML } from "./helpers.mjs";
 import { fingerprintGateway, numberReply, referenceFixture } from "./fingerprint-helpers.mjs";
 
 test("all three tests project reported tokens, retaining zero and distinguishing missing samples", () => {

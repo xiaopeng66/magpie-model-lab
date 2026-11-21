@@ -2,9 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { RunStore } from "../lib/store.mjs";
-import { startServer } from "../lib/server.mjs";
 import { Runner } from "../lib/runner.mjs";
-import { fakeGateway, temporary, FIXTURE_HTML } from "./helpers.mjs";
+import { startTestServer as startServer, fakeGateway, temporary, FIXTURE_HTML } from "./helpers.mjs";
 
 test("automatic history export and deletion require exactly the displayed daily group", async t => {
   const dir = await temporary(t), store = new RunStore(dir); await store.init();

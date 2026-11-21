@@ -74,7 +74,21 @@ export async function fingerprintGateway(t, { handler, models = ["responses", "c
     try { if (handler) await handler({ req, res, payload, chunk, complete, seen }); else complete(); }
     catch { res.destroy(); }
   });
-  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  let url;
+  for (let attempt = 0; attempt < 16; attempt++) {
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+    url = `http://127.0.0.1:${server.address().port}`;
+    try {
+      // Windows can allocate a temporary port blocked by Fetch; probe without adding a test-visible read.
+      await (await fetch(url + "/v1/models")).arrayBuffer();
+      seen.reads.pop();
+      break;
+    } catch (error) {
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+      if (error.cause?.message !== "bad port" || attempt === 15) throw error;
+    }
+  }
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
-  return { url: `http://127.0.0.1:${server.address().port}`, seen, server };
+  return { url, seen, server };
 }

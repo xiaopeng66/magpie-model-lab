@@ -4,7 +4,7 @@ import { request } from "node:http";
 import { createServer } from "node:net";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fakeGateway, temporary, waitFor, FIXTURE_HTML } from "./helpers.mjs";
+import { startTestServer, fakeGateway, temporary, waitFor, FIXTURE_HTML } from "./helpers.mjs";
 
 const httpService = await import("../lib/server.mjs").catch(() => ({}));
 
@@ -12,7 +12,7 @@ async function setup(t, handler) {
   assert.equal(typeof httpService.startServer, "function", "Authenticated plugin service is missing");
   const dir = await temporary(t);
   const upstream = await fakeGateway(t, handler);
-  const service = await httpService.startServer({ port: 0, dataDir: dir, gatewayUrl: upstream.url });
+  const service = await startTestServer({ port: 0, dataDir: dir, gatewayUrl: upstream.url });
   t.after(() => service.close());
   const html = await (await fetch(service.url)).text();
   const token = html.match(/name="pelican-token" content="([a-f0-9]+)"/)?.[1];
@@ -98,7 +98,7 @@ test("HTML result is persisted and preview has a separate capability and no netw
 
 test("browser-open uses the authenticated saved result and cannot choose an external URL", async (t) => {
   const dir = await temporary(t), upstream = await fakeGateway(t), opened = [];
-  const service = await httpService.startServer({ port: 0, dataDir: dir, gatewayUrl: upstream.url, openPreview: async (url) => opened.push(url) });
+  const service = await startTestServer({ port: 0, dataDir: dir, gatewayUrl: upstream.url, openPreview: async (url) => opened.push(url) });
   t.after(() => service.close());
   const page = await (await fetch(service.url)).text();
   const token = page.match(/name="pelican-token" content="([a-f0-9]+)"/)[1];
@@ -122,7 +122,7 @@ test("browser-open uses the authenticated saved result and cannot choose an exte
 test("folder-open authenticates the request and opens only the configured output root", async (t) => {
   const dir = await temporary(t), upstream = await fakeGateway(t), opened = [];
   let failure = true;
-  const service = await httpService.startServer({ port: 0, dataDir: dir, gatewayUrl: upstream.url, openStorage: async path => {
+  const service = await startTestServer({ port: 0, dataDir: dir, gatewayUrl: upstream.url, openStorage: async path => {
     if (failure) { failure = false; throw Object.assign(new Error("Folder launch failed"), { status: 502 }); }
     opened.push(path);
   } }); t.after(() => service.close());
@@ -192,7 +192,7 @@ test("legacy results gain a persistent preview without rewriting their output fi
   await writeFile(files.html, FIXTURE_HTML);
   await writeFile(files.response, "An existing file edited independently of the saved record");
   const upstream = await fakeGateway(t);
-  const service = await httpService.startServer({ port: 0, dataDir: dir, gatewayUrl: upstream.url });
+  const service = await startTestServer({ port: 0, dataDir: dir, gatewayUrl: upstream.url });
   t.after(() => service.close());
   const page = await (await fetch(service.url)).text();
   const token = page.match(/name="pelican-token" content="([a-f0-9]+)"/)[1];

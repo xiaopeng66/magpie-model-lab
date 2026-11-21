@@ -32,14 +32,19 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
     });
   }
 
-  async function perform(control, callback, panel = false) {
+  async function perform(control, callback, panel = false, lockForm = false) {
     if (control.disabled || pendingActions.has(control)) return;
     const version = drawerVersion; pendingActions.add(control); control.disabled = true; control.setAttribute("aria-busy", "true"); status("", panel);
+    const locked = lockForm ? [$("drawer-content"), $("drawer-footer")].flatMap(root => [...root.querySelectorAll("input, select, textarea, button")]).filter(item => item !== control).map(item => [item, item.disabled]) : [];
+    for (const [item] of locked) item.disabled = true;
     try { await callback(version); } catch (error) { if (!panel || version === drawerVersion) status(error.message, panel); }
-    finally { pendingActions.delete(control); control.removeAttribute("aria-busy"); control.disabled = false; if (!panel || version === drawerVersion) control.refreshDisabled?.(); }
+    finally {
+      for (const [item, disabled] of locked) item.disabled = disabled;
+      pendingActions.delete(control); control.removeAttribute("aria-busy"); control.disabled = false; if (!panel || version === drawerVersion) control.refreshDisabled?.();
+    }
   }
-  function action(label, callback, className = "quiet", panel = true) {
-    const control = button(label, () => perform(control, callback, panel), className); return control;
+  function action(label, callback, className = "quiet", panel = true, lockForm = false) {
+    const control = button(label, () => perform(control, callback, panel, lockForm), className); return control;
   }
   function field(label, type, value) {
     const row = node("label", "editor-field"), control = node(type === "textarea" ? "textarea" : "input");
@@ -338,18 +343,21 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
     }, "primary"); save.disabled = true;
     save.refreshDisabled = () => { save.disabled = !picked.size || pendingActions.has(save); text(save, `添加模型${picked.size ? ` · ${picked.size}` : ""}`); text($("drawer-footer").querySelector(".help"), `已选 ${picked.size} 个模型`); };
     function renderList() {
+      const focusedId = list.contains(document.activeElement) ? document.activeElement?.dataset.modelId : null;
       list.replaceChildren(); const needle = search.control.value.toLowerCase().trim();
       const matches = [...models.values()].filter(m => (!provider.control.value || m.provider === provider.control.value) && `${m.id} ${m.name}`.toLowerCase().includes(needle));
       for (const model of matches.slice(0, shown)) {
         const exists = state.favorites.some(f => f.modelId === model.id), item = check(`${modelLabel(model, false)}${provider.control.value ? "" : ` · ${model.providerName || model.provider}`}`, exists || picked.has(model.id), value => {
           if (value) picked.add(model.id); else picked.delete(model.id); save.refreshDisabled();
         }); item.control.disabled = exists; item.row.title = model.id;
+        item.control.dataset.modelId = model.id;
         const names = item.row.querySelector('span'); names.className = 'model-text'; names.replaceChildren(node('strong', 'model-name', modelLabel(model, false)));
         if (!provider.control.value) names.append(node('small', 'model-provider', model.providerName || model.provider));
         if (exists) item.row.append(node("small", "added-badge", "已添加")); list.append(item.row);
       }
       if (matches.length > shown) list.append(button("显示更多", () => { shown += 60; renderList(); }, "quiet"));
       if (!matches.length) list.append(node("p", "help", "没有匹配模型"));
+      if (focusedId) ([...list.querySelectorAll("input")].find(control => control.dataset.modelId === focusedId && !control.disabled) || search.control).focus({ preventScroll: true });
     }
     provider.control.addEventListener("change", () => { shown = 60; renderList(); }); search.control.addEventListener("input", () => { shown = 60; renderList(); });
     content.append(provider.row, search.row, list); footer(save, "已选 0 个模型"); renderList();
@@ -373,11 +381,10 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
     const invalidParameters = () => draft.favorites.some(favorite => draft.parameterInputs[favorite.id] && parameterError(draft.parameterInputs[favorite.id]));
     const save = action("保存设置", async version => {
       if (!validate()) return;
-      for (const favorite of edited()) await post("api/favorites/save", { id: favorite.id, modelId: favorite.modelId, ...parameterPatch(parameterValues(favorite)) });
-      for (const favorite of removed()) await post("api/favorites/remove", { id: favorite.id });
-      if (Number(limit.control.value) !== draft.initialConcurrency) await post("api/schedules/settings", { concurrency: Number(limit.control.value) });
+      await post("api/favorites/manage", { edits: edited().map(favorite => ({ id: favorite.id, modelId: favorite.modelId, ...parameterPatch(parameterValues(favorite)) })),
+        removeIds: removed().map(favorite => favorite.id), concurrency: Number(limit.control.value) });
       await refresh(); if (version === drawerVersion) { closeDrawer(); status("设置已保存", false, "success"); }
-    }, "primary"); footer(save);
+    }, "primary", true, true); footer(save);
     function validate() {
       draft.concurrency = limit.control.value;
       const count = Number(draft.concurrency), message = numericError(draft.concurrency, "并行数");
@@ -469,14 +476,14 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
     const readParameters = () => ({ effort: effort.control.value, maxTokens: tokens.control.value, prompt: prompt.control.value });
     const save = action("保存计划", async version => {
       if (!validate()) return;
-      if (parametersChanged(readParameters(), baseline)) await post("api/favorites/save", { id: favorite.id, modelId: favorite.modelId, ...parameterPatch(readParameters()) });
       await post("api/schedules/save", { ...(plan ? { id: plan.id } : {}), name: `${titleOf(favorite)} · ${labels[targetKind]}`.slice(0, 80), favoriteIds: [favorite.id], kinds: [targetKind],
+        ...(parametersChanged(readParameters(), baseline) ? { parameters: parameterPatch(readParameters()) } : {}),
         mode: mode.control.value, times: mode.control.value === "times" ? readTimes() : plan?.times || ["09:00"],
         ...(mode.control.value === "interval" ? { intervalMinutes: Number(interval.control.value), allDay: allDay.control.checked,
           ...(allDay.control.checked ? {} : { start: start.control.value, end: end.control.value }) } : {}),
         days: [...weekdays], timeZone: zone.control.value.trim(), enabled: enable.control.checked });
       await refresh(); if (version === drawerVersion) { closeDrawer(); status("计划已保存", false, "success"); }
-    }, "primary");
+    }, "primary", true, true);
     footer(save);
     if (plan) {
       const removal = action("删除计划", async version => {

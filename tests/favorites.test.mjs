@@ -102,7 +102,8 @@ test("schedule occurrences honor local weekdays, interval boundaries and overnig
   assert.equal(scheduling.occurrence(night, new Date("2026-11-16T17:00:00Z")), null);
   assert.equal(scheduling.occurrence(night, new Date("2026-11-16T16:45:00Z")), null);
   const dst = { ...base, timeZone: "America/New_York", days: [0], times: ["01:30"] };
-  assert.equal(scheduling.occurrence(dst, new Date("2026-11-01T05:30:00Z")).key, scheduling.occurrence(dst, new Date("2026-11-01T06:30:00Z")).key);
+  assert.equal(scheduling.occurrence(dst, new Date("2026-11-01T05:30:00Z")).at, "2026-11-01T05:30:00.000Z");
+  assert.equal(scheduling.occurrence(dst, new Date("2026-11-01T06:30:00Z")), null, "A repeated local minute cannot catch up a missed first slot");
   const future = scheduling.nextOccurrences({ ...dst, times: ["02:30"] }, new Date("2026-03-08T06:00:00Z"), 1);
   assert.equal(future[0].at, "2026-03-15T06:30:00.000Z");
 });

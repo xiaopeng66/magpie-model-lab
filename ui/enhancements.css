@@ -1,0 +1,70 @@
+.batch-actions { display: flex; flex: none; align-items: center; gap: 6px; }
+.batch-retest { flex: none; padding: 4px 6px; min-height: 28px; font-size: 11px; color: var(--accent); white-space: nowrap; }
+.recent-batch-heading { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; min-height: 28px; }
+.recent-batch-heading .help { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-batch-heading .batch-retest { grid-column: 3; grid-row: 1; }
+.batch-source-host { min-width: 0; }
+.retest-record [data-tone="success"] { color: var(--success); }
+.retest-record [data-tone="error"] { color: var(--error); }
+.retest-record [data-tone="warning"] { color: var(--warning); }
+.batch-source { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 10px; min-height: 24px; margin-bottom: 8px; }
+.batch-source .quiet { padding: 2px 0; min-height: 24px; font-size: 11px; color: var(--accent); }
+.result-card[data-source-focus="true"] { box-shadow: inset 0 0 0 2px var(--accent); }
+.retest-types, .retest-shortcuts { align-self: flex-start; margin: 0 0 10px; }
+.retest-types button, .retest-shortcuts button { font-size: 11px; min-height: 28px; padding: 4px 8px; }
+.retest-records { display: grid; gap: 8px; min-width: 0; }
+.retest-record { min-width: 0; padding: 10px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 8px; }
+.retest-record-heading { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
+.retest-record-heading input { flex: none; margin-top: 3px; }
+.retest-identity { flex: 1; min-width: 0; }
+.retest-identity strong { display: block; color: var(--fg); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.retest-identity .card-provider { display: block; margin: 1px 0 0; }
+.retest-original-result { flex: none; max-width: 35%; text-align: right; font-size: 11px; overflow-wrap: anywhere; }
+.retest-condition-line { margin: 7px 0 0 22px; font-size: 11px; }
+.retest-evidence { margin: 6px 0 0 22px; min-width: 0; }
+.retest-evidence > summary { color: var(--accent); font-size: 11px; cursor: pointer; }
+.retest-evidence .source-view { height: auto; min-height: 0; max-height: 180px; margin: 6px 0 0; padding: 8px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.retest-record .inline-error { display: block; margin: 7px 0 0 22px; font-size: 11px; }
+.retest-note { margin: 10px 0 0; }
+.card-error-hint { display: -webkit-box; max-width: 100%; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: 10px; line-height: 1.5; }
+.error-summary[data-tone="warning"] { color: var(--warning); }
+.error-summary[data-tone="muted"] { color: var(--muted); }
+.candy-zone > [data-tone="error"], .fingerprint-prediction[data-tone="error"] { color: var(--error); }
+.candy-zone > [data-tone="warning"], .fingerprint-prediction[data-tone="warning"] { color: var(--warning); }
+.result-insights { min-width: 0; }
+.result-diagnosis { margin-bottom: 6px; padding: 8px 10px; border-left: 2px solid var(--error); border-radius: 4px; background: var(--surface-soft); }
+.result-diagnosis[data-tone="warning"] { border-left-color: var(--warning); }
+.result-diagnosis[data-tone="muted"] { border-left-color: var(--control-line); }
+.diagnosis-label { color: var(--error); font-size: 12px; }
+.result-diagnosis[data-tone="warning"] .diagnosis-label { color: var(--warning); }
+.result-diagnosis[data-tone="muted"] .diagnosis-label { color: var(--muted); }
+.diagnosis-advice { margin: 3px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.trend-toggle { min-height: 28px; padding: 4px 0; color: var(--accent); font-size: 11px; cursor: pointer; }
+.trend-body { margin-top: 5px; padding: 10px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
+.trend-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.trend-metric { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.trend-metric strong { font-size: 16px; line-height: 1.4; font-weight: 600; color: var(--fg); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.trend-metric span { color: var(--muted); font-size: 10px; line-height: 1.5; }
+.trend-note, .trend-candidates { margin: 8px 0 0; font-size: 11px; }
+.trend-track { display: flex; gap: 4px; padding: 3px 1px; margin-top: 8px; }
+.trend-point { flex: 1; min-width: 0; height: 18px; min-height: 18px; padding: 0; border: 0; border-radius: 3px; background: var(--control-line); }
+.trend-point[data-tone="success"] { background: var(--success); }
+.trend-point[data-tone="error"] { background: var(--error); }
+.trend-point[data-tone="warning"] { background: var(--warning); }
+.trend-point:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.trend-help { margin: 6px 0 8px; font-size: 10px; line-height: 1.6; }
+.trend-table-scroll { max-height: 180px; overflow: auto; scrollbar-gutter: stable; min-width: 0; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); }
+.trend-table { width: 100%; min-width: 310px; border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums; }
+.trend-table th, .trend-table td { padding: 5px 7px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); }
+.trend-table th { position: sticky; top: 0; background: var(--surface-soft); color: var(--muted); font-size: 10px; font-weight: 500; }
+.trend-table :is(th, td):nth-child(-n+2) { text-align: left; }
+.trend-table td:nth-child(2) { max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+.trend-table [data-tone="success"] { color: var(--success); }
+.trend-table [data-tone="error"] { color: var(--error); }
+.trend-table [data-tone="warning"] { color: var(--warning); }
+.trend-table tr:last-child td { border-bottom: 0; }
+.retest-causes { flex-wrap: wrap; align-self: flex-start; margin: 0 0 10px; }
+.retest-causes button { min-height: 28px; padding: 4px 7px; font-size: 10px; }
+.retest-cause-advice { margin: 5px 0 0 22px; font-size: 10px; line-height: 1.5; }
+@media (max-width: 480px) { .trend-metrics { gap: 6px; } .trend-metric strong { font-size: 14px; } .trend-table { min-width: 290px; } }
+@media (max-width: 440px) { .retest-original-result { max-width: 30%; } .recent-batch-heading .help { grid-column: 1 / -1; grid-row: 2; } }
