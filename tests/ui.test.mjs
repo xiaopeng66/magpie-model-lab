@@ -74,7 +74,7 @@ test("Generate button sends the selected model and prompt without a submit event
   input.checked = true; await input.fire("change");
   await ui.elements.get("generate").fire("click");
   assert.equal(requests.length, 1, "The sandbox blocks native submission, so a button click must send the request itself");
-  assert.deepEqual(requests[0], { prompt: "test", maxTokens: 64000, concurrency: 2, models: [{ id: "fixture/one", effort: "" }] });
+  assert.deepEqual(requests[0], { prompt: "test", maxTokens: 64000, timeoutMs: 600000, concurrency: 2, models: [{ id: "fixture/one", effort: "" }] });
 });
 
 test("all providers are shown by default and model search still respects a chosen provider", async () => {

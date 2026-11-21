@@ -363,11 +363,13 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
     content.append(provider.row, search.row, list); footer(save, "已选 0 个模型"); renderList();
   }
 
-  const parameterValues = favorite => ({ effort: favorite.effort || "", maxTokens: String(favorite.maxTokens ?? 64000), prompt: favorite.prompt || "" });
+  const parameterValues = favorite => ({ effort: favorite.effort || "", maxTokens: String(favorite.maxTokens ?? 64000),
+    timeoutSeconds: favorite.timeoutSeconds ?? String((favorite.timeoutMs ?? 600000) / 1000), prompt: favorite.prompt || "" });
   const numericError = (value, label) => !String(value).trim() || !Number.isSafeInteger(Number(value)) || Number(value) < 0
     ? `${label}需为非负整数，0 表示不设上限` : '';
-  const parameterError = value => value.prompt.length > 12000 ? "提示词最多 12000 个字符" : numericError(value.maxTokens, "输出上限");
-  const parameterPatch = value => ({ effort: value.effort, maxTokens: Number(value.maxTokens), prompt: value.prompt });
+  const timeoutError = value => numericError(value, "生成超时") || (Number(value) > 2147483 ? "生成超时最多 2147483 秒，0 表示不设超时" : "");
+  const parameterError = value => value.prompt.length > 12000 ? "提示词最多 12000 个字符" : numericError(value.maxTokens, "输出上限") || timeoutError(value.timeoutSeconds);
+  const parameterPatch = value => ({ effort: value.effort, maxTokens: Number(value.maxTokens), timeoutMs: Number(value.timeoutSeconds) * 1000, prompt: value.prompt });
   const parametersChanged = (first, second) => JSON.stringify(parameterValues(first)) !== JSON.stringify(parameterValues(second));
 
   function manageEditor(draft) {
@@ -428,14 +430,15 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
     content.append(node("h3", "detail-name", titleOf(favorite)), node("p", "help", favorite.providerName || favorite.provider));
     const effort = selectField("思考档位", [["", "默认"], ...new Set([...(model?.efforts || []), ...(values.effort ? [values.effort] : [])])].map(value => Array.isArray(value) ? value : [value, value]), values.effort);
     const tokens = field("输出上限 · Token", "number", values.maxTokens); tokens.control.min = "0";
-    const fields = node("div", "editor-columns"); fields.append(effort.row, tokens.row); content.append(fields);
-    const hint = node("p", "help", "0 = 不设输出上限"); hint.title = "插件不发送输出上限，实际仍受模型、供应商和网关限制"; content.append(hint);
+    const timeout = field("生成超时 · 秒", "number", values.timeoutSeconds); timeout.control.min = "0"; timeout.control.max = "2147483";
+    const fields = node("div", "editor-columns"); fields.append(tokens.row, timeout.row); content.append(effort.row, fields);
+    const hint = node("p", "help", "输出上限或生成超时填 0 = 不设对应上限"); hint.title = "实际仍受模型、供应商和网关限制"; content.append(hint);
     const prompt = field("动画提示词", "textarea", values.prompt); prompt.control.rows = 5; prompt.control.maxLength = 12000; content.append(prompt.row);
-    const read = () => ({ effort: effort.control.value, maxTokens: tokens.control.value, prompt: prompt.control.value });
+    const read = () => ({ effort: effort.control.value, maxTokens: tokens.control.value, timeoutSeconds: timeout.control.value, prompt: prompt.control.value });
     const returnToParent = () => parent.onReturn(read());
     const done = button("完成编辑", returnToParent, "primary"); back(`返回${parent.label}`, returnToParent); footer(done, "返回后由上一级统一保存", `返回${parent.label}`, returnToParent);
-    function validate() { const current = read(), message = parameterError(current); fieldError(tokens, current.prompt.length > 12000 ? "" : message); fieldError(prompt, current.prompt.length > 12000 ? message : ""); done.disabled = Boolean(message) || JSON.stringify(current) === JSON.stringify(values); }
-    for (const item of [effort, tokens, prompt]) item.control.addEventListener("input", validate);
+    function validate() { const current = read(), message = parameterError(current); fieldError(tokens, numericError(current.maxTokens, "输出上限")); fieldError(timeout, timeoutError(current.timeoutSeconds)); fieldError(prompt, current.prompt.length > 12000 ? "提示词最多 12000 个字符" : ""); done.disabled = Boolean(message) || JSON.stringify(current) === JSON.stringify(values); }
+    for (const item of [effort, tokens, timeout, prompt]) item.control.addEventListener("input", validate);
     validate();
   }
 
@@ -468,12 +471,13 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
     const parameters = node("section", "plan-parameters"), values = parameterValues(favorite);
     const effort = selectField("思考档位", [["", "默认"], ...new Set([...(models.get(favorite.modelId)?.efforts || []), ...(values.effort ? [values.effort] : [])])].map(value => Array.isArray(value) ? value : [value, value]), values.effort);
     const tokens = field("输出上限 · Token", "number", values.maxTokens); tokens.control.min = "0";
-    const parameterFields = node("div", "editor-columns"); parameterFields.append(effort.row, tokens.row);
+    const timeout = field("生成超时 · 秒", "number", values.timeoutSeconds); timeout.control.min = "0"; timeout.control.max = "2147483";
+    const parameterFields = node("div", "editor-columns"); parameterFields.append(tokens.row, timeout.row);
     const prompt = field("动画提示词", "textarea", values.prompt); prompt.control.rows = 3; prompt.control.maxLength = 12000;
-    parameters.append(node("h3", "", "模型参数"), parameterFields, node("p", "help", "0 = 不设输出上限"));
+    parameters.append(node("h3", "", "模型参数"), effort.row, parameterFields, node("p", "help", "输出上限或生成超时填 0 = 不设对应上限"));
     if (targetKind === 'pelican') parameters.append(prompt.row);
     content.append(parameters);
-    const readParameters = () => ({ effort: effort.control.value, maxTokens: tokens.control.value, prompt: prompt.control.value });
+    const readParameters = () => ({ effort: effort.control.value, maxTokens: tokens.control.value, timeoutSeconds: timeout.control.value, prompt: prompt.control.value });
     const save = action("保存计划", async version => {
       if (!validate()) return;
       await post("api/schedules/save", { ...(plan ? { id: plan.id } : {}), name: `${titleOf(favorite)} · ${labels[targetKind]}`.slice(0, 80), favoriteIds: [favorite.id], kinds: [targetKind],
@@ -512,13 +516,13 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
       const dateSignature = [...weekdays].sort().join(""); for (const [control, signature] of shortcutButtons) control.setAttribute("aria-pressed", String(signature === dateSignature));
       try { if (!zone.control.value.trim()) throw new Error(); new Intl.DateTimeFormat("en", { timeZone: zone.control.value.trim() }); } catch { const zoneMessage = "请输入有效时区，如 Asia/Shanghai"; fieldError(zone, zoneMessage); message ||= zoneMessage; }
       const currentParameters = readParameters(), invalidParameter = parameterError(currentParameters);
-      fieldError(tokens, currentParameters.prompt.length > 12000 ? "" : invalidParameter); fieldError(prompt, currentParameters.prompt.length > 12000 ? invalidParameter : ""); message ||= invalidParameter;
+      fieldError(tokens, numericError(currentParameters.maxTokens, "输出上限")); fieldError(timeout, timeoutError(currentParameters.timeoutSeconds)); fieldError(prompt, currentParameters.prompt.length > 12000 ? "提示词最多 12000 个字符" : ""); message ||= invalidParameter;
       const dirty = !plan || parametersChanged(currentParameters, baseline) || JSON.stringify(readForm()) !== JSON.stringify(form);
       save.disabled = Boolean(message) || !dirty || pendingActions.has(save); counter.dataset.invalid = String(Boolean(message)); text(counter, message || `每天 ${count} 次 / 最多 ${cap} 次`);
       text($("drawer-footer").querySelector(".help"), dirty ? "有未保存修改" : ""); return !message;
     }
     save.refreshDisabled = validate;
-    for (const item of [mode, times, interval, start, end, zone, effort, tokens, prompt]) { item.control.addEventListener("input", validate); item.control.addEventListener("change", validate); }
+    for (const item of [mode, times, interval, start, end, zone, effort, tokens, timeout, prompt]) { item.control.addEventListener("input", validate); item.control.addEventListener("change", validate); }
     allDay.control.addEventListener("change", validate); enable.control.addEventListener("change", validate); validate();
   }
 

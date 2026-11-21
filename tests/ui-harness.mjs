@@ -76,7 +76,7 @@ export async function uiHarness({ bootstrap, detail, create, cleanup, open, open
     const tail = html.slice(match.index + match[0].length), plain = /^([^<]+)<\//.exec(tail); if (plain) element.textContent = plain[1];
     return [match[2], element];
   }));
-  for (const name of ["max-tokens", "concurrency"]) {
+  for (const name of ["max-tokens", "generation-timeout", "concurrency"]) {
     const field = [...html.matchAll(/<input\b[^>]*>/g)].find(match => match[0].includes(`id="${name}"`));
     if (field) elements.get(name).value = field[0].match(/\bvalue="([^"]*)"/)?.[1] || "";
   }

@@ -14,9 +14,9 @@
 
 Magpie 的普通 npm 搜索当前主要筛选 OpenCode 供应商插件和 pi provider 包。仅增加 `magpie-plugin` **npm keyword** 不等于进入发现；GitHub **topic** 是另一个设置。本插件依赖 Magpie 页面与网关，保持真实分类，不添加无关的 OpenCode 登录插件标签。
 
-## 1.0.4 正式更新
+## 1.0.5 正式更新
 
-本次 GitHub 发布版本为 **1.0.4**，正式标签和 Release 为 `v1.0.4`，独立资产为 `magpie-pelican-bench-1.0.4.zip` 与 `.zip.sha256`。包含标题行原条件复测、失败原因、近期趋势及审查修复，已移除批次对比摘要与条件差异说明。历史正文按需读取，单批 JSON 导出采用 16 MiB 预算。发布前完成 Node 22、Node 26、Bun 测试及静态、打包检查；保留旧标签和资产，不覆盖已有版本。
+本次 GitHub 发布版本为 **1.0.5**，正式标签和 Release 为 `v1.0.5`，独立资产为 `magpie-pelican-bench-1.0.5.zip` 与 `.zip.sha256`。本次补齐可调生成超时，覆盖手动测试、指纹采样、自动参数、历史复测与趋势条件；默认 600 秒，0 为不设插件侧超时。历史正文按需读取，单批 JSON 导出采用 16 MiB 预算。发布前完成 Node 22、Node 26、Bun 测试及静态、打包检查；保留旧标签和资产，不覆盖已有版本。
 
 ## 1.0.3 历史更新
 
@@ -53,15 +53,15 @@ README.md  CHANGELOG.md  LICENSE  THIRD_PARTY_NOTICES.md  .gitignore
 
 开发工作目录还保留内部设计与验证材料。发布时使用白名单生成的 ZIP 解压目录作为 Git 仓库来源，避免直接把整个开发目录推上网。安装包不含运行数据、自动计划、参考库缓存、烟雾测试结果或内部验证报告。npm 包只包含运行文件与公开文档；ZIP 另含开发工具及测试。
 
-以下命令检查 1.0.4 并生成发布包，不执行安装或发布：
+以下命令检查 1.0.5 并生成发布包，不执行安装或发布：
 
 ```powershell
 node --test tests/*.test.mjs
 bun test ./tests
 bun tools/check-static.mjs
 npm pack --dry-run --json
-powershell -NoProfile -File tools/package.ps1 -OutputDirectory dist/release-1.0.4
-powershell -NoProfile -File tools/check-package.ps1 -Archive dist/release-1.0.4/magpie-pelican-bench-1.0.4.zip
+powershell -NoProfile -File tools/package.ps1 -OutputDirectory dist/release-1.0.5
+powershell -NoProfile -File tools/check-package.ps1 -Archive dist/release-1.0.5/magpie-pelican-bench-1.0.5.zip
 npm pack --pack-destination dist --ignore-scripts
 ```
 
@@ -84,7 +84,7 @@ gh release create v1.0.0 --repo xiaopeng66/magpie-model-lab --verify-tag --title
 
 随后在该 Release 上传验证后的 `magpie-pelican-bench-1.0.0.zip` 和 `.zip.sha256`。GitHub 自带源码压缩包也可安装，但独立 ZIP 直接包含插件根目录，便于本地添加。
 
-用户可以使用 `magpie plugin add github:xiaopeng66/magpie-model-lab` 安装默认分支，或附加 `#v1.0.4` 固定本次正式版。后续发布保留同一仓库和包名，并递增版本。
+用户可以使用 `magpie plugin add github:xiaopeng66/magpie-model-lab` 安装默认分支，或附加 `#v1.0.5` 固定本次正式版。后续发布保留同一仓库和包名，并递增版本。
 
 ## 验证发现
 
@@ -100,12 +100,12 @@ Magpie 自有社区栏目与 GitHub 非官方栏目不同；加 topic 不代表�
 
 ## npm 与社区搜索（可选）
 
-如需增加 npm 渠道，先用有发布权限的 npm 账号登录并确认包名可用。包名查询时不存在，不代表名称已被预留。下面仅为 1.0.4 的可选 npm 发布示例；本次只发布 GitHub，不执行这些命令。
+如需增加 npm 渠道，先用有发布权限的 npm 账号登录并确认包名可用。包名查询时不存在，不代表名称已被预留。下面仅为 1.0.5 的可选 npm 发布示例；本次只发布 GitHub，不执行这些命令。
 
 ```powershell
 npm login --registry https://registry.npmjs.org
 npm whoami --registry https://registry.npmjs.org
-npm publish ./dist/magpie-pelican-bench-1.0.4.tgz --access public --registry https://registry.npmjs.org
+npm publish ./dist/magpie-pelican-bench-1.0.5.tgz --access public --registry https://registry.npmjs.org
 ```
 
 发布已检查的 `.tgz`，可确保上传的正是检查过的文件。npm 同名同版本不能覆盖重发；需要修正时发布新版本。登录、双重验证与包名权限以 npm 实际提示为准。

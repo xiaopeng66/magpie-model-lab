@@ -29,6 +29,7 @@ import { createResultInsights } from './result-insights.mjs';
   let executionView = "current", creating = false, addingFavorites = false, fingerprintAvailable = false, batchCancel = false, batchExport = false, retestAvailable = false, bankUpdating = false, cachedAccounts = [], accountsLoaded = false, accountsLoading = false;
   const concurrencyDrafts = { current: "2", fingerprint: "3", candy: "3" };
   const tokenLabel = value => value === 0 ? "不设输出上限" : `${value ?? 64000} Token`;
+  const timeoutLabel = value => value === 0 ? "不设超时" : `超时 ${(value ?? 600000) / 1000} 秒`;
   const concurrencyLabel = run => run.concurrency === 0 ? "不设并行上限" : `并行 ${run.concurrency ?? (run.kind === "fingerprint" || run.kind === "candy" ? 3 : 2)}`;
   const kindLabel = kind => ({ pelican: "动画", fingerprint: "指纹", candy: "糖果" })[kind || "pelican"];
   const candyVerdict = run => run.status === "completed" ? run.candy?.verdict || "review" : "incomplete";
@@ -902,7 +903,7 @@ import { createResultInsights } from './result-insights.mjs';
     renderUsage(detail.usage, run); renderStats(detail, run);
     text(detail.elapsed, `耗时 ${detail.metrics[0].textContent}`);
     detail.phase.hidden = !active(run); text(detail.phase, active(run) ? states[run.status] : "");
-    const parameters = [run.model, run.effort || "默认档位", tokenLabel(run.maxTokens), concurrencyLabel(run)].join(" · ");
+    const parameters = [run.model, run.effort || "默认档位", tokenLabel(run.maxTokens), timeoutLabel(run.timeoutMs), concurrencyLabel(run)].join(" · ");
     let output = run.content || "", placeholder = run.loadError ? "读取失败" : active(run) ? "等待结果…" : run.loaded ? "暂无输出" : "正在读取…";
     if (kind === "pelican") {
       if (mode !== "content") output = run.html || "";
@@ -1134,9 +1135,9 @@ import { createResultInsights } from './result-insights.mjs';
   $("history-source").addEventListener("change", renderHistory);
   for (const name of ['current', 'fingerprint', 'candy']) $(`${name}-history-link`).addEventListener('click', () => openManualHistory(name));
   $("favorite-selected").addEventListener("click", async () => {
-    const control = $("favorite-selected"); if (control.disabled || addingFavorites || !validateNumber("max-tokens", "输出上限")) return;
+    const control = $("favorite-selected"); if (control.disabled || addingFavorites || !validateNumber("max-tokens", "输出上限") || !validateNumber("generation-timeout", "生成超时")) return;
     const originView = activeView; addingFavorites = true; control.disabled = true; control.setAttribute("aria-busy", "true");
-    try { await favoritesUI.addSelected([...selected], { maxTokens: Number($("max-tokens").value), prompt: $("prompt").value }); if (activeView === originView) setView("favorites"); }
+    try { await favoritesUI.addSelected([...selected], { maxTokens: Number($("max-tokens").value), timeoutMs: Number($("generation-timeout").value) * 1000, prompt: $("prompt").value }); if (activeView === originView) setView("favorites"); }
     catch (err) { error(err.message); } finally { addingFavorites = false; control.removeAttribute("aria-busy"); control.disabled = !selected.size || !favoritesAvailable; }
   });
   function renderBank(value) {
@@ -1264,7 +1265,7 @@ import { createResultInsights } from './result-insights.mjs';
   $("calendar-close").addEventListener("click", () => closeCalendar(true));
   $("cleanup-calendar").addEventListener("keydown", event => { if (event.key === "Escape") { event.preventDefault(); closeCalendar(true); } });
   $("cleanup-before").addEventListener("input", () => $("cleanup-before").removeAttribute("aria-invalid"));
-  for (const id of ["max-tokens", "concurrency"]) $(id).addEventListener("input", () => $(id).removeAttribute("aria-invalid"));
+  for (const id of ["max-tokens", "generation-timeout", "concurrency"]) $(id).addEventListener("input", () => $(id).removeAttribute("aria-invalid"));
   addEventListener("pointerdown", event => { if (!$("cleanup-calendar").hidden && !$("cleanup-calendar").contains(event.target) && !$("choose-date").contains(event.target)) closeCalendar(); });
   addEventListener("focusin", event => { if (!$("cleanup-calendar").hidden && !$("cleanup-calendar").contains(event.target) && !$("choose-date").contains(event.target)) closeCalendar(); });
   addEventListener("scroll", event => { if (!$("cleanup-calendar").contains(event.target)) closeCalendar(); }, true);
@@ -1312,6 +1313,9 @@ import { createResultInsights } from './result-insights.mjs';
     if (!control.value.trim() || !Number.isSafeInteger(value) || value < 0) {
       $("advanced-settings").open = true; control.setAttribute("aria-invalid", "true"); error(`${label}需为非负整数，0 表示不设上限`); control.focus(); return false;
     }
+    if (id === "generation-timeout" && value > 2147483) {
+      $("advanced-settings").open = true; control.setAttribute("aria-invalid", "true"); error("生成超时最多 2147483 秒，0 表示不设超时"); control.focus(); return false;
+    }
     control.removeAttribute("aria-invalid"); return true;
   }
   // Magpie's sandbox blocks native submission before a form's submit event can run.
@@ -1321,14 +1325,14 @@ import { createResultInsights } from './result-insights.mjs';
     if (!selected.size) { error("请选择至少一个模型"); return; }
     if (executionView === "current" && !$("prompt").value.trim()) { togglePrompt(true); error("请填写测试提示词"); $("prompt").setAttribute("aria-invalid", "true"); return; }
     $("prompt").removeAttribute("aria-invalid");
-    for (const [id, label] of [["max-tokens", "输出上限"], ["concurrency", "每批并行数"]]) {
+    for (const [id, label] of [["max-tokens", "输出上限"], ["generation-timeout", "生成超时"], ["concurrency", "每批并行数"]]) {
       if (!validateNumber(id, label)) return;
     }
     const mode = executionView; creating = true; updateSettings();
     try {
       const body = await api("api/runs", { method: "POST", body: JSON.stringify({
         ...(mode === "fingerprint" ? { kind: "fingerprint", strict: $("fp-strict").checked, api: $("fp-api").value || "auto", serviceTier: $("fp-tier").value || "default" } : mode === "candy" ? { kind: "candy" } : { prompt: $("prompt").value }),
-        maxTokens: Number($("max-tokens").value), concurrency: Number($("concurrency").value), models: [...selected].map(([id, effort]) => ({ id, effort,
+        maxTokens: Number($("max-tokens").value), timeoutMs: Number($("generation-timeout").value) * 1000, concurrency: Number($("concurrency").value), models: [...selected].map(([id, effort]) => ({ id, effort,
           ...(mode === "fingerprint" && $("fp-pin").checked && selectedAccounts.get(id) ? { account: selectedAccounts.get(id) } : {}) })),
       }) });
       for (const run of body.runs) updateRun(run, false); renderHistory();

@@ -1,6 +1,6 @@
 {
   "name": "magpie-pelican-bench",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "AI model evaluation for Magpie: compare reasoning, IQ-style puzzles, HTML animations and model fingerprints with scheduled tests. 模型实验室：AI 模型能力评测、模型对比、推理与智商趣味测试、鹈鹕动画、模型指纹和定时自动测试。",
   "type": "module",
   "main": "index.mjs",
