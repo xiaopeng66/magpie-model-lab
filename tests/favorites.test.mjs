@@ -104,8 +104,9 @@ test("schedule occurrences honor local weekdays, interval boundaries and overnig
   const dst = { ...base, timeZone: "America/New_York", days: [0], times: ["01:30"] };
   assert.equal(scheduling.occurrence(dst, new Date("2026-11-01T05:30:00Z")).at, "2026-11-01T05:30:00.000Z");
   assert.equal(scheduling.occurrence(dst, new Date("2026-11-01T06:30:00Z")), null, "A repeated local minute cannot catch up a missed first slot");
-  const future = scheduling.nextOccurrences({ ...dst, times: ["02:30"] }, new Date("2026-03-08T06:00:00Z"), 1);
-  assert.equal(future[0].at, "2026-03-15T06:30:00.000Z");
+  const spring = { ...dst, times: ["02:30"] };
+  assert.equal(scheduling.dailySlots(spring, new Date("2026-03-08T06:00:00Z")).slots[0].state, "skipped");
+  assert.equal(scheduling.occurrence(spring, new Date("2026-03-15T06:30:00Z")).at, "2026-03-15T06:30:00.000Z");
 });
 
 test("automatic windows end at the local wall clock across DST and expired or stale plan references cannot start work", async t => {
@@ -149,8 +150,8 @@ test("automatic cancellation is saved before shutdown returns and configuration 
   const result = await favorites.run({ ids: [one.id], kinds: ["candy"] }, { source: "automatic", plans: [], expiresAt: new Date(Date.now() + 60000).toISOString() });
   await runner.close();
   const saved = JSON.parse(await readFile(join(dir, result.runs[0].id, "run.json"), "utf8")); assert.equal(saved.status, "cancelled");
-  const atomic = runner.store.atomic;
-  runner.store.atomic = async () => { throw new Error("disk full"); };
+  const atomic = favorites.file.replace;
+  favorites.file.replace = async () => { throw new Error("disk full"); };
   await assert.rejects(favorites.settings({ enabled: false }), /disk full/);
-  assert.equal(favorites.snapshot().enabled, true); runner.store.atomic = atomic;
+  assert.equal(favorites.snapshot().enabled, true); favorites.file.replace = atomic;
 });

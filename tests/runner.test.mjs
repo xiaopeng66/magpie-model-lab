@@ -93,9 +93,15 @@ test("length-limited HTML is saved with truncated status and not offered as comp
 });
 
 test("invalid and upstream error responses retain truthful terminal statuses", async (t) => {
-  const { runner } = await setup(t, ({ res, payload, complete }) => {
-    if (payload.model.endsWith("one")) complete("This is not HTML");
-    else { res.writeHead(429); res.end('{"error":{"message":"Quota reached"}}'); }
+  let invalidArrived;
+  const invalidReceived = new Promise(resolve => { invalidArrived = resolve; });
+  const { runner } = await setup(t, async ({ res, payload, complete }) => {
+    if (payload.model.endsWith("one")) { complete("This is not HTML"); invalidArrived(); }
+    else {
+      // Both responses are under test; a 429 must not cool the still-unsent invalid request.
+      await invalidReceived;
+      res.writeHead(429); res.end('{"error":{"message":"Quota reached"}}');
+    }
   });
   const runs = await runner.submit(request(["one", "two"]));
   await waitFor(() => ["invalid", "error"].every((state, i) => runner.get(runs[i].id)?.status === state));

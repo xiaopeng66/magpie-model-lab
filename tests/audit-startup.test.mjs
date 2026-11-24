@@ -3,12 +3,14 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { randomUUID } from "node:crypto";
-import { startServer } from "../lib/server.mjs";
 import { RunStore } from "../lib/store.mjs";
 import { Favorites } from "../lib/favorites.mjs";
-import { temporary, fakeGateway, waitFor } from "./helpers.mjs";
+import { startTestServer as startServer, temporary, fakeGateway, waitFor } from "./helpers.mjs";
 import { uiHarness } from "./ui-harness.mjs";
 
 async function occupied(t) {
@@ -36,29 +38,41 @@ test("008: a temporary port handoff still succeeds and closing cancels future re
   await service.close(); assert.equal(service.listening, false);
 });
 
-async function entryFixture(start) {
-  const source = (await readFile(new URL("../index.mjs", import.meta.url), "utf8")).replace(/^import .*;\r?\n/gm, "").replace("export default", "plugin =");
-  const messages = [], context = { join, startServer: start, plugin: null, console: { log: value => messages.push(value), error: value => messages.push(value) } };
+async function entryFixture(spawn) {
+  const source = (await readFile(new URL("../index.mjs", import.meta.url), "utf8")).replace(/^import .*;\r?\n/gm, "")
+    .replace(/\bimport\.meta\.url\b/g, JSON.stringify(new URL("../index.mjs", import.meta.url).href)).replace("export default", "plugin =");
+  const messages = [], context = { join, fileURLToPath, URL, spawn, process: { execPath: process.execPath, platform: process.platform, stdin: new PassThrough(), exit() {} }, setTimeout, clearTimeout,
+    plugin: null, console: { log: value => messages.push(value), error: value => messages.push(value) } };
   runInNewContext(source, context); return { plugin: context.plugin, messages };
 }
 
-test("008: an immediate failed entry startup does not poison the cache for the next request", async () => {
+function childFixture() {
+  return Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), exitCode: null, signalCode: null });
+}
+
+test("008: an immediate failed entry spawn does not poison the cache for the next request", async () => {
   let calls = 0;
-  const { plugin } = await entryFixture(async () => {
+  const { plugin } = await entryFixture(() => {
     if (++calls === 1) throw new Error("fixture startup failure");
-    return { ready: Promise.resolve(0), close: async () => {} };
+    const child = childFixture(); queueMicrotask(() => child.stdout.write("Model Lab http://127.0.0.1:54321/\n")); return child;
   });
   await assert.rejects(() => plugin.server({}, { port: 54321 }), /startup failure/);
   await plugin.server({}, { port: 54321 }); assert.equal(calls, 2);
 });
 
-test("008: a failed ready promise closes its service and allows a fresh entry startup", async () => {
-  let calls = 0, closed = 0, fail;
-  const firstReady = new Promise((_resolve, reject) => { fail = reject; });
-  const { plugin } = await entryFixture(async () => ({ ready: ++calls === 1 ? firstReady : Promise.resolve(0), close: async () => { closed++; } }));
-  await plugin.server({}, { port: 54321 }); fail(new Error("fixture port conflict"));
-  await new Promise(resolve => setTimeout(resolve, 0));
-  await plugin.server({}, { port: 54321 }); assert.equal(calls, 2); assert.equal(closed, 1);
+test("008: a child exit before readiness closes its input and allows a fresh entry startup", async () => {
+  const children = [];
+  const { plugin } = await entryFixture(() => {
+    const child = childFixture(); children.push(child);
+    queueMicrotask(() => {
+      if (children.length === 1) { child.exitCode = 1; child.stdout.end(); child.emit("exit", 1); child.emit("close", 1); }
+      else child.stdout.write("Model Lab http://127.0.0.1:54321/\n");
+    });
+    return child;
+  });
+  await assert.rejects(() => plugin.server({}, { port: 54321 }), /后台已退出/);
+  assert.equal(children[0].stdin.writableEnded, true);
+  await plugin.server({}, { port: 54321 }); assert.equal(children.length, 2);
 });
 
 test("009: damaged favorites retain their bytes, disable writes and automatic tests, and leave healthy history and manual tests available", async t => {

@@ -68,7 +68,7 @@ test("legacy shared plans split without enabling paused work; conflicts keep a r
   ] };
   await writeFile(join(dir, ".favorites", "state.json"), JSON.stringify(legacy));
   const migrated = new Favorites({ dir, runner }); await migrated.init();
-  assert.equal(migrated.state.schema, 2); assert.equal(migrated.state.plans.length, 2);
+  assert.equal(migrated.state.schema, 3); assert.equal(migrated.state.plans.length, 2);
   assert.ok(migrated.state.plans.every(p => p.favoriteIds.length === 1 && p.kinds[0] === "candy" && !p.enabled));
   assert.match(migrated.state.plans.find(p => p.favoriteIds[0] === one.id).migrationReason, /重叠/);
   assert.deepEqual(JSON.parse(await readFile(join(dir, ".favorites", "state-v1-backup.json"), "utf8")), legacy);

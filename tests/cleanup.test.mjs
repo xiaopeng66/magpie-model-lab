@@ -111,7 +111,7 @@ test("batch cleanup deletes only that batch's records and files, including its t
   const runner = new Runner({ store, gateway: {} }); t.after(() => runner.close());
   const events = []; runner.subscribe(event => events.push(event));
   const outcome = await runner.cleanup({ mode: "batch", batchId: ids[0] });
-  assert.deepEqual(outcome, { removed: [ids[0], ids[1]], skippedActive: 0, errors: [] });
+  assert.deepEqual(outcome, { removed: [ids[0], ids[1]], skippedActive: 0, skippedProtected: 0, errors: [] });
   assert.equal(await exists(join(store.dir, ids[0])), false);
   assert.equal(await exists(join(store.dir, ids[1])), false);
   assert.equal(runner.get(ids[0]), null);

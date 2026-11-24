@@ -84,7 +84,7 @@ for (const api of ["chat_completions", "messages", "responses"]) test(`${api} fi
 test("fingerprint finish retains nested token usage and recovers it from old sample records", async t => {
   const store = new RunStore(await temporary(t)); await store.init();
   const runner = new Runner({ store, gateway: {} }); t.after(() => runner.close());
-  const run = { id: "5a4a1ce4-5ffd-4ea9-a754-2a23be1e769b", kind: "fingerprint", status: "running", createdAt: new Date().toISOString(),
+  const run = { id: "5a4a1ce4-5ffd-4ea9-a754-2a23be1e769b", model: "fixture/one", kind: "fingerprint", status: "running", createdAt: new Date().toISOString(),
     samples: [0, 1, 2].map(() => ({ state: "failed", usage: { completion_tokens: 50, completion_tokens_details: { reasoning_tokens: 20 } } })) };
   runner.runs.set(run.id, run); await runner.finishFingerprint(run, {});
   assert.equal(run.usage.completion_tokens_details?.reasoning_tokens, 60);

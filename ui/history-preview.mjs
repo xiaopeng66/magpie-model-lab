@@ -1,7 +1,11 @@
 import { scheduledTime, historyTime } from '../lib/history-groups.mjs';
+import { readRunTarget, targetLabel } from '../lib/targets.mjs';
+import { readGrade } from '../lib/suites.mjs';
 
 export function renderDailyHistory(group, container, { node, text, button, modelLabel, active, timeZone, mount }) {
-  const title = run => modelLabel({ id: run.model, name: run.modelName, provider: run.provider, providerName: run.providerName }, false);
+  const identity = run => { try { const target = readRunTarget(run); return target.account.mode === 'pinned' ? target.targetKey : run.model; } catch { return run.model; } };
+  const targetIds = [...new Set(group.runs.map(identity))];
+  const title = run => modelLabel({ id: run.model, name: run.modelName, provider: run.provider, providerName: run.providerName }, false) + (targetLabel(run) ? ' · ' + targetLabel(run) : '');
   const when = at => historyTime(at, timeZone);
   const heading = run => {
     const root = node('div', 'card-model'), name = node('h3', '', title(run)), provider = node('p', 'card-provider', run.providerName || run.provider);
@@ -26,8 +30,8 @@ export function renderDailyHistory(group, container, { node, text, button, model
     const sizes = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateNavigation);
     navigationButtons.append(newer, older);
     navigation.append(node('span', 'help', '每个模型一行 · 最新在左，最早在右'), navigationButtons);
-    for (const model of group.modelIds) {
-      const run = group.runs.find(record => record.model === model), row = node('section', 'animation-row history-animation-row'), lane = node('div', 'animation-lane history-animation-lane'), names = heading(run);
+    for (const model of targetIds) {
+      const run = group.runs.find(record => identity(record) === model), row = node('section', 'animation-row history-animation-row'), lane = node('div', 'animation-lane history-animation-lane'), names = heading(run);
       names.classList.add('animation-model'); row.setAttribute('aria-label', `${title(run)} 的每日动画长廊`);
       lane.setAttribute('tabindex', '0'); lane.setAttribute('role', 'region'); lane.setAttribute('aria-label', `${title(run)} 的动画时段`);
       lane.addEventListener('scroll', updateNavigation, { passive: true }); sizes?.observe(lane);
@@ -37,7 +41,7 @@ export function renderDailyHistory(group, container, { node, text, button, model
     function update(current) {
       const targets = new Map();
       for (const [model, { lane, slots }] of rows) {
-        const records = current.runs.filter(run => run.model === model), ids = new Set(records.map(run => run.id));
+        const records = current.runs.filter(run => identity(run) === model), ids = new Set(records.map(run => run.id));
         for (const [id, { cell }] of slots) if (!ids.has(id)) { cell.remove(); slots.delete(id); }
         for (const [index, run] of records.entries()) {
           let slot = slots.get(run.id);
@@ -77,8 +81,8 @@ export function renderDailyHistory(group, container, { node, text, button, model
     selection.hidden = !records.length; text(note, records.length ? `${title(records[0])} · ${when(selected.at)} · ${records.length} 份结果` : '');
     mount(records.map(run => run.id), new Map(records.map(run => [run.id, results])));
   }
-  for (const model of group.modelIds) {
-    const run = group.runs.find(record => record.model === model), card = node('article', 'favorite-candy-card history-candy-summary'), metric = node('div', 'candy-metric');
+  for (const model of targetIds) {
+    const run = group.runs.find(record => identity(record) === model), card = node('article', 'favorite-candy-card history-candy-summary'), metric = node('div', 'candy-metric');
     const ratio = node('strong', 'candy-ratio'), summary = node('span', 'help'), exceptions = node('p', 'exception-summary'), bars = node('div', 'candy-bars');
     metric.append(node('span', 'metric-caption', '答案命中率'), ratio, summary); card.append(heading(run), metric, exceptions, bars);
     bars.setAttribute('role', 'group'); bars.setAttribute('aria-label', `${title(run)} 的 ${group.date} 糖果结果`);
@@ -89,9 +93,9 @@ export function renderDailyHistory(group, container, { node, text, button, model
   legend.append(node('span', '', '点击时段查看该模型，再次点击收起'));
   container.append(summaries, legend, selection);
   function update(current) {
-    byModel = new Map(current.modelIds.map(model => [model, new Map()]));
+    byModel = new Map([...new Set(current.runs.map(identity))].map(model => [model, new Map()]));
     for (const run of current.runs) {
-      const times = byModel.get(run.model), at = scheduledTime(run);
+      const times = byModel.get(identity(run)), at = scheduledTime(run);
       if (!times.has(at)) times.set(at, []);
       times.get(at).push(run);
     }
@@ -121,14 +125,14 @@ export function renderDailyHistory(group, container, { node, text, button, model
           });
         }
         const attempts = times.get(at) || [], run = attempts.find(record => record.status === 'completed') || attempts[0];
-        const verdict = !run ? 'waiting' : active(run) ? run.status : run.status === 'completed' ? run.candy?.verdict || 'review' : 'incomplete';
+        const verdict = !run ? 'waiting' : active(run) ? run.status : run.status === 'completed' ? readGrade(run)?.verdict || 'review' : 'incomplete';
         const label = ({ match: '答案匹配', mismatch: '答案不匹配', review: '待复核', running: '测试中', queued: '排队中' })[verdict]
           || (run ? ({ error: '请求失败', cancelled: '已取消', interrupted: '已中断', truncated: '已截断' })[run.status] || '未完成' : '无结果');
         control.disabled = !run; control.dataset.verdict = verdict; control.title = `${name} · ${clock} · ${label}`; control.setAttribute('aria-label', control.title);
         if (bars.children[index] !== control) bars.insertBefore(control, bars.children[index] || null);
       }
       const records = [...times.values()].flat();
-      const match = records.filter(run => run.status === 'completed' && run.candy?.verdict === 'match').length, mismatch = records.filter(run => run.status === 'completed' && run.candy?.verdict === 'mismatch').length;
+      const match = records.filter(run => run.status === 'completed' && readGrade(run)?.verdict === 'match').length, mismatch = records.filter(run => run.status === 'completed' && readGrade(run)?.verdict === 'mismatch').length;
       text(ratio, match + mismatch ? `${Math.round(match / (match + mismatch) * 100)}%` : '—'); text(summary, `${match} / ${match + mismatch} 个可判定结果`);
       text(exceptions, `请求失败 ${records.filter(run => run.status === 'error').length} · 中断 ${records.filter(run => run.status === 'interrupted').length}`);
     }

@@ -28,7 +28,7 @@ export function referenceFixture(builtAt = "test-snapshot", ranked = false) {
   return { bundle, detector, compressed: Buffer.concat([zstd, detector]), cache: Buffer.concat([length, bundle, detector]) };
 }
 
-export async function fingerprintGateway(t, { handler, models = ["responses", "chat", "messages"], route, bank } = {}) {
+export async function fingerprintGateway(t, { handler, models = ["responses", "chat", "messages"], route, bank, accounts } = {}) {
   const seen = { requests: [], downloads: [], reads: [], active: 0, peak: 0, aborted: 0 };
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
@@ -38,10 +38,11 @@ export async function fingerprintGateway(t, { handler, models = ["responses", "c
       res.end(url.pathname.endsWith("bundle.json") ? bank.bundle : bank.compressed); return;
     }
     if (req.method === "GET") {
+      if (url.pathname === '/') { res.end(JSON.stringify({ name: 'magpie', version: '0.1.4530' })); return; }
       seen.reads.push(req.url); res.setHeader("content-type", "application/json");
       if (url.pathname === "/v1/models") res.end(JSON.stringify({ data: models.map(name => ({ id: "fixture/" + name, display_name: name,
         reasoning_levels: ["low", "high"], native_endpoints: [name === "messages" ? "/v1/messages" : name === "responses" ? "/v1/responses" : "/v1/chat/completions"] })) }));
-      else if (url.pathname === "/v1/magpie/quotas") res.end(JSON.stringify({ data: [{ provider: "fixture", user: "北冥", alias: "主账号", kind: "subscription", token: "never-send", balance: 99 }] }));
+      else if (url.pathname === "/v1/magpie/quotas") res.end(JSON.stringify({ data: accounts || [{ provider: "fixture", user: "北冥", alias: "主账号", kind: "subscription", token: "never-send", balance: 99 }] }));
       else if (url.pathname === "/v1/magpie/route" && route) res.end(JSON.stringify(route(url.searchParams.get("session"))));
       else { res.writeHead(404); res.end("{}"); }
       return;

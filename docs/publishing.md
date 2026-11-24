@@ -14,13 +14,31 @@
 
 Magpie 的普通 npm 搜索当前主要筛选 OpenCode 供应商插件和 pi provider 包。仅增加 `magpie-plugin` **npm keyword** 不等于进入发现；GitHub **topic** 是另一个设置。本插件依赖 Magpie 页面与网关，保持真实分类，不添加无关的 OpenCode 登录插件标签。
 
+## 发行说明与插件内更新日志
+
+后续发行说明统一从 [版本日志数据](../ui/release-notes.mjs) 导出。GitHub 完整说明依次采用「更新内容、体验优化、验证、安装与升级、使用说明」；没有原始内容的栏目省略。插件使用同一份版本数据，只展示更新内容和体验优化，安装、验证及使用说明保留在 GitHub。日期按北京时间显示；新版本发布后回读 GitHub `published_at` 核对日期，历史版本保留原始发布时间。
+
+更新内容以该版本最终实现与上一正式版本的差异为依据，不记录开发中的多次调整、临时功能的增删或没有变化的功能。当前 1.0.6 以正式 1.0.5 为基准；历史版本继续保留各自发布时的实际更新，不把新版本功能补入旧说明。
+
+先在数据中核对版本内容和已发布状态，再生成单个版本的说明文件：
+
+```powershell
+node tools/release-notes.mjs 1.0.6 dist/release-notes-v1.0.6.md
+```
+
+导出器只写本地 Markdown，不执行发布或远端修改。本地开发条目不允许作为正式说明导出；准备已授权的正式发布时，在最终交付文件中设置版本日期和发行链接，去掉本地标记，完成检查后发布，再回读标签、资产、日期与内容。修改已有 GitHub 说明应先备份原正文，用 `--notes-file` 或 JSON 文件传入真实换行，并重新读取确认；标签、资产和原发布时间继续保留。
+
+## 1.0.6 正式更新
+
+本次 GitHub 发布版本为 **1.0.6**，正式标签和 Release 为 `v1.0.6`，独立资产为 `magpie-pelican-bench-1.0.6.zip` 与 `.zip.sha256`。新增模式参数记忆、常用参数方案、多账号与多轮测试、历史标注及保留策略、请求控制、每日用量、配置迁移和离线更新日志。保持五页结构、紧凑字号及明暗主题，改进固定顶栏、长名称和窄窗口显示。发布采用白名单 ZIP 的解压文件，公开源码不含内部规划、运行数据或验证截图。
+
 ## 1.0.5 正式更新
 
-本次 GitHub 发布版本为 **1.0.5**，正式标签和 Release 为 `v1.0.5`，独立资产为 `magpie-pelican-bench-1.0.5.zip` 与 `.zip.sha256`。本次补齐可调生成超时，覆盖手动测试、指纹采样、自动参数、历史复测与趋势条件；默认 600 秒，0 为不设插件侧超时。历史正文按需读取，单批 JSON 导出采用 16 MiB 预算。发布前完成 Node 22、Node 26、Bun 测试及静态、打包检查；保留旧标签和资产，不覆盖已有版本。
+1.0.5 的正式标签和 Release 为 `v1.0.5`，独立资产为 `magpie-pelican-bench-1.0.5.zip` 与 `.zip.sha256`。该版本补齐可调生成超时，覆盖手动测试、指纹采样、自动参数、历史复测与趋势条件；默认 600 秒，0 为不设插件侧超时。历史正文按需读取，单批 JSON 导出采用 16 MiB 预算。发布前完成 Node 22、Node 26、Bun 测试及静态、打包检查；旧标签和资产继续保留。
 
 ## 1.0.3 历史更新
 
-上一正式版本为 **1.0.3**。标签和 Release 为 `v1.0.3`，独立资产为 `magpie-pelican-bench-1.0.3.zip` 与校验文件。保留已有发布和本地试用包；重新打包时选择新的输出目录。后续发布递增版本，不覆盖旧标签或资产。
+1.0.3 的标签和 Release 为 `v1.0.3`，独立资产为 `magpie-pelican-bench-1.0.3.zip` 与校验文件。保留已有发布和本地试用包；重新打包时选择新的输出目录。后续发布递增版本，不覆盖旧标签或资产。
 
 清单的中英文简介及 keywords 包含 AI 模型评测、模型对比、推理能力、智商／智力趣味测试、鹈鹕动画、模型指纹和定时监控。`magpie.summary` 每种语言均须保持在宿主允许的 300 UTF-8 字节以内，否则该语言简介会被忽略。发布同步 GitHub 仓库简介为 `模型实验室 Model Lab for Magpie：AI 模型评测与对比、糖果推理和智商趣味测试、鹈鹕动画、模型指纹、定时自动测试。`，并增加 `model-evaluation`、`model-comparison`、`reasoning-benchmark`、`iq-style-test` 等主题。检索仍受 GitHub 索引和宿主缓存影响。
 
@@ -53,15 +71,15 @@ README.md  CHANGELOG.md  LICENSE  THIRD_PARTY_NOTICES.md  .gitignore
 
 开发工作目录还保留内部设计与验证材料。发布时使用白名单生成的 ZIP 解压目录作为 Git 仓库来源，避免直接把整个开发目录推上网。安装包不含运行数据、自动计划、参考库缓存、烟雾测试结果或内部验证报告。npm 包只包含运行文件与公开文档；ZIP 另含开发工具及测试。
 
-以下命令检查 1.0.5 并生成发布包，不执行安装或发布：
+以下命令检查 1.0.6 并生成发布包，不执行安装或发布：
 
 ```powershell
 node --test tests/*.test.mjs
 bun test ./tests
 bun tools/check-static.mjs
 npm pack --dry-run --json
-powershell -NoProfile -File tools/package.ps1 -OutputDirectory dist/release-1.0.5
-powershell -NoProfile -File tools/check-package.ps1 -Archive dist/release-1.0.5/magpie-pelican-bench-1.0.5.zip
+powershell -NoProfile -File tools/package.ps1 -OutputDirectory dist/release-1.0.6
+powershell -NoProfile -File tools/check-package.ps1 -Archive dist/release-1.0.6/magpie-pelican-bench-1.0.6.zip
 npm pack --pack-destination dist --ignore-scripts
 ```
 
@@ -84,7 +102,7 @@ gh release create v1.0.0 --repo xiaopeng66/magpie-model-lab --verify-tag --title
 
 随后在该 Release 上传验证后的 `magpie-pelican-bench-1.0.0.zip` 和 `.zip.sha256`。GitHub 自带源码压缩包也可安装，但独立 ZIP 直接包含插件根目录，便于本地添加。
 
-用户可以使用 `magpie plugin add github:xiaopeng66/magpie-model-lab` 安装默认分支，或附加 `#v1.0.5` 固定本次正式版。后续发布保留同一仓库和包名，并递增版本。
+用户可以使用 `magpie plugin add github:xiaopeng66/magpie-model-lab` 安装默认分支，或附加 `#v1.0.6` 固定本次正式版。后续发布保留同一仓库和包名，并递增版本。
 
 ## 验证发现
 
@@ -100,12 +118,12 @@ Magpie 自有社区栏目与 GitHub 非官方栏目不同；加 topic 不代表�
 
 ## npm 与社区搜索（可选）
 
-如需增加 npm 渠道，先用有发布权限的 npm 账号登录并确认包名可用。包名查询时不存在，不代表名称已被预留。下面仅为 1.0.5 的可选 npm 发布示例；本次只发布 GitHub，不执行这些命令。
+如需增加 npm 渠道，先用有发布权限的 npm 账号登录并确认包名可用。包名查询时不存在，不代表名称已被预留。下面仅为 1.0.6 的可选 npm 发布示例；本次只发布 GitHub，不执行这些命令。
 
 ```powershell
 npm login --registry https://registry.npmjs.org
 npm whoami --registry https://registry.npmjs.org
-npm publish ./dist/magpie-pelican-bench-1.0.5.tgz --access public --registry https://registry.npmjs.org
+npm publish ./dist/magpie-pelican-bench-1.0.6.tgz --access public --registry https://registry.npmjs.org
 ```
 
 发布已检查的 `.tgz`，可确保上传的正是检查过的文件。npm 同名同版本不能覆盖重发；需要修正时发布新版本。登录、双重验证与包名权限以 npm 实际提示为准。

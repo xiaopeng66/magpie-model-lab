@@ -22,7 +22,7 @@ test("fingerprint APIs require the page token and bootstrap does not download th
   assert.equal((await api("fingerprint/bank/refresh", { method: "POST", headers: { origin: "https://foreign.example" } })).status, 403);
   assert.equal((await api("fingerprint/bank/refresh", { method: "POST" })).status, 200);
   assert.equal((await (await api("fingerprint/bank")).json()).state, "ready"); assert.equal(upstream.seen.downloads.length, 2); assert.equal(upstream.seen.requests.length, 0);
-  const accounts = await (await api("fingerprint/accounts")).json(); assert.deepEqual(accounts.accounts, [{ provider: "fixture", id: "北冥", name: "主账号" }]);
+  const accounts = await (await api("fingerprint/accounts")).json(); assert.deepEqual(accounts.accounts, [{ provider: "fixture", id: "北冥", name: "主账号", enabled: null, available: null }]);
 });
 
 test("fingerprint batch export preserves raw evidence and history cleanup removes samples but keeps the bank", async t => {

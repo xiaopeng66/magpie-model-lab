@@ -161,12 +161,14 @@ input[type="checkbox"] { width: 14px; height: 14px; }
 .editor-list-row { min-height: 52px; padding: 8px 0; gap: 8px; }
 .editor-list-row:last-child { border-bottom: 0; }
 .editor-list-row > .history-delete { min-height: 30px; }
-.compact-limit { display: grid; grid-template-columns: minmax(0, 1fr) 112px; gap: 18px; align-items: center; margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line); }
+.compact-limit { display: grid; grid-template-columns: minmax(0, 1fr) 112px; gap: 18px; align-items: center; margin-top: var(--settings-section-gap); padding-top: var(--form-gap); border-top: 1px solid var(--line); }
+.compact-limit > div > .help { margin-top: var(--field-gap); }
 .compact-limit .editor-field > span { display: none; }
 .inline-error { margin-top: 6px; color: var(--error); font-size: 12px; }
-.plan-parameters { padding-top: 14px; border-top: 1px solid var(--line); }
-.plan-parameters h3 { font-size: 12px; margin-bottom: 10px; }
-.plan-parameters > .help { margin: 6px 0 12px; }
+.plan-parameters { margin-top: var(--settings-section-gap); padding-top: var(--form-gap); border-top: 1px solid var(--line); }
+.plan-parameters > h3 { font-size: 12px; margin-bottom: var(--form-gap); }
+.plan-parameters > .editor-columns { margin-top: var(--form-gap); }
+.plan-parameters > .help { margin: var(--field-gap) 0 0; }
 .drawer-footer .plan-delete { margin-right: auto; }
 .drawer-footer:has(.plan-delete) .help { margin-right: 0; }
 .editor-model-list .check-row:has(input:disabled) { opacity: .85; }

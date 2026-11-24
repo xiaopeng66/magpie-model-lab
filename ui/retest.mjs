@@ -58,7 +58,10 @@ export async function openRetestDrawer({ document, openDrawer, closeDrawer, api,
       const root = node("section", "retest-record"), heading = node("label", "retest-record-heading"), control = node("input"), identity = node("span", "retest-identity");
       control.type = "checkbox"; control.checked = item.available && item.run.status !== "cancelled";
       const [name, provider] = names(item.run); identity.append(node("strong", "", name), node("span", "card-provider", provider));
-      control.setAttribute("aria-label", `复测 ${name}`); heading.append(control, identity);
+      const repeatCount = item.run.experiment?.repeatCount, roundIndex = item.run.repetitionIndex;
+      const round = Number.isSafeInteger(repeatCount) && repeatCount > 1 && Number.isSafeInteger(roundIndex) && roundIndex >= 0 && roundIndex < repeatCount ? `第 ${roundIndex + 1}/${repeatCount} 轮` : "";
+      if (round) identity.append(node("span", "help retest-round", round));
+      control.setAttribute("aria-label", [`复测 ${name}`, provider, round].filter(Boolean).join(" · ")); heading.append(control, identity);
       const result = node("span", "retest-original-result", ({ queued: "排队中", running: "生成中", completed: "已完成", error: "请求失败", invalid: "无效输出", truncated: "输出截断", cancelled: "已取消", interrupted: "已中断" })[item.run.status] || "—");
       if (item.run.status === "completed" && item.kind === "candy") text(result, ({ match: "命中 · 21", mismatch: `答错 · ${item.run.candy?.answer ?? "—"}`, review: "待复核" })[item.run.candy?.verdict] || "待复核");
       const diagnostic = failureInfo(item.run);

@@ -57,7 +57,7 @@ test("strict sampling accepts complete JSON and records gateway route mismatches
 test("cached account labels are projected without credentials or balances", async t => {
   const upstream = await fingerprintGateway(t); const gateway = new Gateway({ url: upstream.url });
   assert.equal(typeof gateway.accounts, "function", "Cached account projection is missing");
-  assert.deepEqual(await gateway.accounts(), [{ provider: "fixture", id: "北冥", name: "主账号" }]);
+  assert.deepEqual(await gateway.accounts(), [{ provider: "fixture", id: "北冥", name: "主账号", enabled: null, available: null }]);
   assert.deepEqual(upstream.seen.reads, ["/v1/magpie/quotas?kept=1"]);
 });
 
@@ -100,6 +100,18 @@ async function runnerFixture(t, options = {}) {
   return { dir, runner, store, bank, upstream };
 }
 const fingerprintRequest = (ids = ["chat"], options = {}) => ({ kind: "fingerprint", models: ids.map(id => ({ id: "fixture/" + id, effort: "low" })), maxTokens: 32000, concurrency: 2, ...options });
+
+test('fingerprint account evidence aggregates all samples and never labels partial evidence as verified', async t => {
+  for (const expected of ['verified', 'unavailable', 'mismatch']) {
+    let routeReads = 0;
+    const { runner, store } = await runnerFixture(t, { route: () => ({ route: { model: 'fixture/chat', provider: 'fixture', ...(expected === 'unavailable' && ++routeReads === 2 ? {} : { accountId: expected === 'mismatch' ? 'other-account' : '北冥' }) } }) });
+    const [created] = await runner.submit({ kind: 'fingerprint', targets: [{ modelId: 'fixture/chat', account: { mode: 'pinned', id: '北冥' } }], maxTokens: 32000, concurrency: 1 });
+    await waitFor(() => !runner.busy(created.id) && !['queued', 'running'].includes(runner.get(created.id).status));
+    const run = await store.get(created.id); assert.equal(run.routing.verification, expected);
+    assert.equal(run.routing.requestedAccountId, '北冥');
+    if (expected === 'mismatch') { assert.equal(run.status, 'error'); assert.equal(run.analysis, null); }
+  }
+});
 
 test("zero fingerprint concurrency starts all samples across models and still supports cancellation", async t => {
   const { runner, upstream } = await runnerFixture(t, { handler: ({ res }) => {
@@ -168,13 +180,15 @@ test("fingerprint batch cancellation aborts all active samples before the queue 
 test("partial fingerprint scoring omits probability while strict and route-mismatched results remain unscored", async t => {
   let calls = 0;
   const partial = await runnerFixture(t, { handler: ({ res, complete }) => {
-    if (++calls === 2) { res.writeHead(429); res.end('{"error":{"message":"quota"}}'); } else complete();
+    if (++calls === 2) { res.writeHead(429, { 'retry-after': '1' }); res.end('{"error":{"message":"quota"}}'); } else complete();
   } });
   const [created] = await partial.runner.submit(fingerprintRequest());
+  await waitFor(() => partial.runner.queuePolicy.status().cooldowns.length);
   await waitFor(() => !["queued", "running"].includes(partial.runner.get(created.id).status));
   assert.equal(partial.runner.get(created.id).analysis.decision, "partial"); assert.equal(partial.runner.get(created.id).analysis.probability, null);
   calls = 0;
   const [strict] = await partial.runner.submit(fingerprintRequest(["chat"], { strict: true }));
+  await waitFor(() => partial.runner.queuePolicy.status().cooldowns.length);
   await waitFor(() => !["queued", "running"].includes(partial.runner.get(strict.id).status));
   assert.equal(partial.runner.get(strict.id).analysis, null);
   const mismatch = await runnerFixture(t, { route: () => ({ route: { model: "fixture/other", provider: "fixture" } }) });

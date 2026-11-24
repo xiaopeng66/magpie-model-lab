@@ -1,6 +1,6 @@
 /* Shared favorites use the same saved runs and preview components as the test pages. */
 "use strict";
-globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, api, models, runs, modelLabel, active, makeUsage, renderUsage, mount, openResultDetail, confirmAction, isVisible, initialKind, rememberView }) {
+globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, api, models, runs, modelLabel, active, makeUsage, renderUsage, mount, openResultDetail, confirmAction, isVisible, initialKind, rememberView, accountLabel = () => '', onAccountTarget, parseTimeoutSeconds }) {
   const labels = { candy: "糖果", pelican: "动画" }, candyCards = new Map(), animationRows = new Map(), pendingActions = new WeakSet(), pendingPlans = new Set();
   let state = { favorites: [], plans: [], enabled: true, concurrency: 3 }, supported = false, kind = initialKind === "pelican" ? "pelican" : "candy", page = 0, opener = null, drawerVersion = 0, refreshTask = null, refreshAgain = false;
   let fieldNumber = 0, disposeDrawer = null, feedbackTimer;
@@ -14,7 +14,11 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
     text(target, message); target.hidden = !message; target.dataset.tone = tone;
   };
   const filtered = () => state.favorites.filter(f => !$("favorite-provider").value || f.provider === $("favorite-provider").value);
-  const titleOf = favorite => modelLabel({ id: favorite.modelId, name: favorite.modelName, provider: favorite.provider, providerName: favorite.providerName }, false);
+  const titleOf = favorite => modelLabel({ id: favorite.modelId, name: favorite.modelName, provider: favorite.provider, providerName: favorite.providerName }, false) + (accountLabel(favorite) ? ' · ' + accountLabel(favorite) : '');
+  const targetHeading = favorite => {
+    const heading = node('h3', 'detail-name phase-target-title', titleOf(favorite));
+    heading.title = `${titleOf(favorite)}\n${favorite.modelId}`; return heading;
+  };
   const verdictOf = run => run.status === "completed" ? run.candy?.verdict || "review" : "incomplete";
   const verdictLabel = run => active(run) ? run.status === "running" ? "生成中" : "排队中" : ({ match: "答案 21", mismatch: `答案 ${run.candy?.answer}`, review: "待复核", incomplete: ({ error: "请求失败", cancelled: "已取消", interrupted: "已中断", truncated: "已截断" })[run.status] || "未完成" })[verdictOf(run)];
   const planOf = favorite => state.plans.find(plan => plan.favoriteIds[0] === favorite.id && plan.kinds[0] === kind);
@@ -78,6 +82,7 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
     target?.focus({ preventScroll: true }); opener = null;
   }
   function openDrawer(title, origin, mode = "compact", dispose = null) {
+    $("drawer-content").className = "drawer-content";
     if ($("favorite-drawer").hidden) opener = origin || document.activeElement || $("favorite-add");
     disposeDrawer?.(); disposeDrawer = dispose; $("drawer-tools").replaceChildren();
     drawerVersion++; $("drawer-content").scrollTop = 0;
@@ -367,9 +372,9 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
     timeoutSeconds: favorite.timeoutSeconds ?? String((favorite.timeoutMs ?? 600000) / 1000), prompt: favorite.prompt || "" });
   const numericError = (value, label) => !String(value).trim() || !Number.isSafeInteger(Number(value)) || Number(value) < 0
     ? `${label}需为非负整数，0 表示不设上限` : '';
-  const timeoutError = value => numericError(value, "生成超时") || (Number(value) > 2147483 ? "生成超时最多 2147483 秒，0 表示不设超时" : "");
+  const timeoutError = value => { try { parseTimeoutSeconds(value); return ''; } catch (error) { return error.message; } };
   const parameterError = value => value.prompt.length > 12000 ? "提示词最多 12000 个字符" : numericError(value.maxTokens, "输出上限") || timeoutError(value.timeoutSeconds);
-  const parameterPatch = value => ({ effort: value.effort, maxTokens: Number(value.maxTokens), timeoutMs: Number(value.timeoutSeconds) * 1000, prompt: value.prompt });
+  const parameterPatch = value => ({ effort: value.effort, maxTokens: Number(value.maxTokens), timeoutMs: parseTimeoutSeconds(value.timeoutSeconds), prompt: value.prompt });
   const parametersChanged = (first, second) => JSON.stringify(parameterValues(first)) !== JSON.stringify(parameterValues(second));
 
   function manageEditor(draft) {
@@ -427,10 +432,11 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
   function editFavorite(favorite, parent) {
     const content = openDrawer("模型参数"), model = models.get(favorite.modelId);
     const values = parent.values || parameterValues(favorite);
-    content.append(node("h3", "detail-name", titleOf(favorite)), node("p", "help", favorite.providerName || favorite.provider));
+    content.append(targetHeading(favorite), node("p", "help", favorite.providerName || favorite.provider));
+    if (onAccountTarget) { const add = button('添加为新账号目标', () => onAccountTarget(favorite, add), 'quiet'); content.append(add, node('p', 'help', '当前账号绑定保持；新目标单独保存，需要另行设置计划。')); }
     const effort = selectField("思考档位", [["", "默认"], ...new Set([...(model?.efforts || []), ...(values.effort ? [values.effort] : [])])].map(value => Array.isArray(value) ? value : [value, value]), values.effort);
     const tokens = field("输出上限 · Token", "number", values.maxTokens); tokens.control.min = "0";
-    const timeout = field("生成超时 · 秒", "number", values.timeoutSeconds); timeout.control.min = "0"; timeout.control.max = "2147483";
+    const timeout = field("生成超时 · 秒", "number", values.timeoutSeconds); timeout.control.min = "0"; timeout.control.max = "2147483.647"; timeout.control.step = '0.001';
     const fields = node("div", "editor-columns"); fields.append(tokens.row, timeout.row); content.append(effort.row, fields);
     const hint = node("p", "help", "输出上限或生成超时填 0 = 不设对应上限"); hint.title = "实际仍受模型、供应商和网关限制"; content.append(hint);
     const prompt = field("动画提示词", "textarea", values.prompt); prompt.control.rows = 5; prompt.control.maxLength = 12000; content.append(prompt.row);
@@ -446,7 +452,7 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
     const targetKind = kind, plan = planOf(favorite), baseline = { ...favorite };
     const form = { mode: plan?.mode || "times", times: (plan?.times || ["09:00", "12:30", "18:00"]).join(", "), interval: String(plan?.intervalMinutes || 60), start: plan?.start || "09:00", end: plan?.end || "18:00", allDay: Boolean(plan?.allDay), days: [...(plan?.days || [1, 2, 3, 4, 5])].sort(), zone: plan?.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone, enabled: Boolean(plan?.enabled) };
     const content = openDrawer(`${labels[targetKind]}计划`, origin);
-    content.append(node("h3", "detail-name", titleOf(favorite)), node("p", "help", favorite.providerName || favorite.provider));
+    content.append(targetHeading(favorite), node("p", "help", favorite.providerName || favorite.provider));
     if (plan?.migrationReason) content.append(node("p", "form-error", plan.migrationReason));
     const mode = selectField("执行方式", [["times", "指定时刻"], ["interval", "固定间隔"]], form.mode);
     const times = field("每天这些时刻 · 逗号分隔", "text", form.times);
@@ -465,13 +471,13 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
     const dayError = node("p", "inline-error"); dayError.hidden = true; content.append(node("p", "help", "重复日期"), shortcuts, days, dayError);
     const zone = field("时区", "text", form.zone);
     const extra = node("details", "editor-details"); extra.append(node("summary", "", "时区与运行说明"), zone.row,
-      node("p", "help", "到点测试，满额排队。需保持插件运行，错过不补跑。"), node("p", "help", "跨午夜按开始日计算；结束后不再启动排队任务。")); content.append(extra);
+      node("p", "help", "到点测试；并行数已满时排队。需保持插件运行，错过不补跑。"), node("p", "help", "跨午夜按开始日计算；结束后不再启动排队任务。")); content.append(extra);
     const enable = check("启用此模型的计划", form.enabled); content.append(enable.row);
     const readForm = () => ({ mode: mode.control.value, times: times.control.value, interval: interval.control.value, start: start.control.value, end: end.control.value, allDay: allDay.control.checked, days: [...weekdays].sort(), zone: zone.control.value, enabled: enable.control.checked });
     const parameters = node("section", "plan-parameters"), values = parameterValues(favorite);
     const effort = selectField("思考档位", [["", "默认"], ...new Set([...(models.get(favorite.modelId)?.efforts || []), ...(values.effort ? [values.effort] : [])])].map(value => Array.isArray(value) ? value : [value, value]), values.effort);
     const tokens = field("输出上限 · Token", "number", values.maxTokens); tokens.control.min = "0";
-    const timeout = field("生成超时 · 秒", "number", values.timeoutSeconds); timeout.control.min = "0"; timeout.control.max = "2147483";
+    const timeout = field("生成超时 · 秒", "number", values.timeoutSeconds); timeout.control.min = "0"; timeout.control.max = "2147483.647"; timeout.control.step = '0.001';
     const parameterFields = node("div", "editor-columns"); parameterFields.append(tokens.row, timeout.row);
     const prompt = field("动画提示词", "textarea", values.prompt); prompt.control.rows = 3; prompt.control.maxLength = 12000;
     parameters.append(node("h3", "", "模型参数"), effort.row, parameterFields, node("p", "help", "输出上限或生成超时填 0 = 不设对应上限"));
@@ -552,7 +558,7 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
     },
     async addSelected(picks, settings) {
       if (!supported) throw new Error("重新开启插件以加载自动测试功能");
-      for (const [modelId, effort] of picks) await post("api/favorites/save", { modelId, effort, ...settings });
+      for (const pick of picks) { const [modelId, effort] = Array.isArray(pick) ? pick : [pick.modelId, pick.effort]; await post("api/favorites/save", { modelId, effort, ...settings, ...(Array.isArray(pick) ? {} : { account: pick.account }) }); }
       await refresh();
     },
   };

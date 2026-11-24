@@ -20,6 +20,9 @@ async function filesIn(directory) {
 const files = await filesIn(root);
 const javascript = files.filter(file => /\.(?:js|mjs)$/.test(file));
 for (const file of javascript) execFileSync("node", ["--check", file], { stdio: "pipe", windowsHide: true });
+const browserBuild = await Bun.build({ entrypoints: [join(root, 'ui/app.js'), join(root, 'ui/favorites.js')], target: 'browser', write: false });
+assert.equal(browserBuild.success, true, JSON.stringify(browserBuild.logs));
+assert.equal(browserBuild.logs.length, 0);
 const html = await readFile(join(root, "ui/index.html"), "utf8");
 const css = await readFile(join(root, "ui/style.css"), "utf8");
 const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
@@ -80,6 +83,6 @@ for (const file of documents) {
     links++;
   }
 }
-const report = { at: new Date().toISOString(), version: metadata.version, javascriptFiles: javascript.length, htmlIDs: ids.length, svgUses: uses.length, cssVariables: declared.size, cssBuild: { success: styleBuild.success, logs: styleBuild.logs.length }, contrast, localDocLinks: links };
+const report = { at: new Date().toISOString(), version: metadata.version, javascriptFiles: javascript.length, browserModuleBuild: { success: browserBuild.success, logs: browserBuild.logs.length }, htmlIDs: ids.length, svgUses: uses.length, cssVariables: declared.size, cssBuild: { success: styleBuild.success, logs: styleBuild.logs.length }, contrast, localDocLinks: links };
 await writeFile(join(root, ".test-data", `audit-${metadata.version}-static.json`), JSON.stringify(report, null, 2) + "\n");
 console.log(JSON.stringify(report, null, 2));

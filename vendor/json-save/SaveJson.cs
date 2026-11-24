@@ -1,15 +1,73 @@
 using System;
 using System.Diagnostics;
+using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
 
 [assembly: AssemblyTitle("模型实验室 JSON 保存")]
 [assembly: AssemblyProduct("Magpie Model Lab")]
-[assembly: AssemblyVersion("1.0.3.0")]
+[assembly: AssemblyVersion("1.0.6.0")]
 
 internal static class SaveJson
 {
+    private delegate bool EnumWindowProc(IntPtr handle, IntPtr parameter);
+    [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowProc callback, IntPtr parameter);
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr handle);
+    [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr handle, uint command);
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr handle, out uint processId);
+
+    private static IntPtr VisibleWindow(Process process)
+    {
+        IntPtr main = process.MainWindowHandle;
+        if (main != IntPtr.Zero && IsWindowVisible(main)) return main;
+        IntPtr found = IntPtr.Zero;
+        EnumWindows(delegate(IntPtr handle, IntPtr parameter)
+        {
+            uint processId;
+            GetWindowThreadProcessId(handle, out processId);
+            if (processId != process.Id || !IsWindowVisible(handle) || GetWindow(handle, 4) != IntPtr.Zero) return true;
+            found = handle;
+            return false;
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    private static IntPtr ResolveParentWindow(int parentId)
+    {
+        IntPtr parent = IntPtr.Zero;
+        try
+        {
+            using (Process process = Process.GetProcessById(parentId))
+            {
+                parent = VisibleWindow(process);
+                if (parent != IntPtr.Zero && string.Equals(process.ProcessName, "magpie", StringComparison.OrdinalIgnoreCase)) return parent;
+            }
+        }
+        catch { }
+        IntPtr foreground = GetForegroundWindow(), magpie = IntPtr.Zero;
+        foreach (Process process in Process.GetProcessesByName("magpie"))
+        {
+            using (process)
+            {
+                try
+                {
+                    IntPtr candidate = VisibleWindow(process);
+                    if (candidate == IntPtr.Zero) continue;
+                    uint foregroundId;
+                    GetWindowThreadProcessId(foreground, out foregroundId);
+                    if (foregroundId == process.Id) return candidate;
+                    if (magpie == IntPtr.Zero) magpie = candidate;
+                }
+                catch { }
+            }
+        }
+        // RYP: the service may outlive its headless launcher; own the dialog from Magpie.
+        return magpie == IntPtr.Zero ? parent : magpie;
+    }
+
     private sealed class ParentWindow : IWin32Window
     {
         public IntPtr Handle { get; private set; }
@@ -21,16 +79,15 @@ internal static class SaveJson
     {
         int parentId;
         if (args.Length != 2 || !int.TryParse(args[1], out parentId)) return 2;
+        if (!string.Equals(Path.GetExtension(args[0]), ".json", StringComparison.OrdinalIgnoreCase)) return 2;
         try
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            IntPtr parent = IntPtr.Zero;
-            try { parent = Process.GetProcessById(parentId).MainWindowHandle; }
-            catch { }
+            IntPtr parent = ResolveParentWindow(parentId);
             using (var picker = new SaveFileDialog())
             {
-                picker.Title = "保存批次 JSON";
+                picker.Title = "保存 JSON";
                 picker.Filter = "JSON 文件 (*.json)|*.json";
                 picker.FileName = args[0];
                 picker.DefaultExt = "json";

@@ -48,6 +48,22 @@ test("the Model Lab logo is served as the packaged PNG with a matching entry-pag
   assert.match(html, /src="icon\.png"/); assert.match(html, /模型实验室/);
 });
 
+test('all browser entry modules and their imports are available as public JavaScript', async t => {
+  const { service, html, upstream } = await setup(t);
+  const pending = [...html.matchAll(/<script\b[^>]*src="([^"]+)"/g)].map(match => new URL(match[1], service.url));
+  const visited = new Set();
+  while (pending.length) {
+    const url = pending.shift(); if (visited.has(url.href)) continue; visited.add(url.href);
+    const response = await fetch(url);
+    assert.equal(response.status, 200, 'Browser module is unavailable: ' + url.pathname);
+    assert.match(response.headers.get('content-type'), /javascript/);
+    const source = await response.text();
+    for (const match of source.matchAll(/^import\s+.*?\s+from\s+['"]([^'"]+)['"]/gm)) pending.push(new URL(match[1], url));
+  }
+  assert.ok(visited.size > 10);
+  assert.equal(upstream.seen.requests.length, 0);
+});
+
 test("private APIs reject anonymous, wrong-token and foreign-origin requests", async (t) => {
   const { service, headers } = await setup(t);
   assert.equal((await fetch(service.url + "api/bootstrap")).status, 403);
@@ -160,6 +176,7 @@ test("HTTP JSON preserves Chinese split inside a UTF-8 character and counts raw 
   const malformed = Buffer.concat([Buffer.from('{"prompt":"'), Buffer.from([0xff]), Buffer.from('","models":[{"id":"fixture/one"}]}')]);
   assert.equal((await fetch(service.url + "api/runs", { method: "POST", headers, body: malformed })).status, 400);
   assert.equal(upstream.seen.requests.length, 1, "Rejected requests must not consume a model call");
+  await service.close(); // Drain the accepted generation before shared temporary-directory cleanup.
 });
 
 test("a saved result keeps its preview link across a host restart without generating again", async (t) => {

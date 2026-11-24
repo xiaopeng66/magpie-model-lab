@@ -71,11 +71,11 @@ test("018: trend refresh retains each surviving button and returns a removed foc
   const insights = createResultInsights(ui.document, { timeZone: "UTC", onSource() {} });
   ui.elements.get("drawer-content").append(insights.root); insights.update(records[2], records);
   const point = name => controls(ui, insights.root).find(element => element.dataset.runId === name);
-  const older = point("older"), anchor = point("anchor"), disclosure = ui.descendants(insights.root, "details")[0];
+  const older = point("older"), anchor = point("anchor"), disclosure = insights.root.querySelector('.result-trend');
   disclosure.open = true; older.focus();
   insights.update(records[2], [records[0], records[2]]);
   assert.ok(point("older") === older, "The surviving older record must retain its button");
   assert.ok(point("anchor") === anchor, "The surviving anchor must retain its button"); assert.equal(disclosure.open, true);
   insights.update(records[2], [records[2]]);
-  assert.ok(ui.document.activeElement === ui.descendants(insights.root, "summary")[0], "A removed focused record returns focus to the trend summary");
+  assert.ok(ui.document.activeElement === disclosure.querySelector('summary'), "A removed focused record returns focus to the trend summary");
 });

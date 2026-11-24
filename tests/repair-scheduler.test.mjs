@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Scheduler, occurrence, dailySlots, nextOccurrences } from "../lib/scheduler.mjs";
+import { Scheduler, occurrence, dailySlots } from "../lib/scheduler.mjs";
 import { Favorites } from "../lib/favorites.mjs";
 import { Runner } from "../lib/runner.mjs";
 import { RunStore } from "../lib/store.mjs";
@@ -26,7 +26,8 @@ for (const mode of ["times", "interval"]) test(`A100-008: ${mode} rollback slot 
   assert.equal(occurrence(dst, new Date("2026-11-01T05:30:04Z")).at, "2026-11-01T05:30:00.000Z");
   assert.equal(dailySlots(dst, new Date("2026-11-01T06:00:00Z")).slots[0].state, "missed");
   assert.equal(occurrence(dst, new Date("2026-11-01T06:30:04Z")), null);
-  assert.equal(nextOccurrences(dst, new Date("2026-11-01T06:00:00Z"), 1)[0].at, "2026-11-02T06:30:00.000Z");
+  assert.equal(dailySlots(dst, new Date("2026-11-02T06:00:00Z")).slots[0].at, "2026-11-02T06:30:00.000Z");
+  assert.equal(occurrence(dst, new Date("2026-11-02T06:30:04Z")).at, "2026-11-02T06:30:00.000Z");
 });
 
 test("A100-008: service restarted after rollback does not claim or execute the missed first slot", async t => {

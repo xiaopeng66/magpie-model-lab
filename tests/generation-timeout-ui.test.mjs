@@ -36,7 +36,7 @@ test("invalid generation timeout is identified and focused without sending a req
   let requests = 0; const ui = await uiHarness({ bootstrap: boot(), create: () => { requests++; return { runs: [] }; } });
   await select(ui);
   const timeout = ui.elements.get("generation-timeout"); assert.ok(timeout, "Generation timeout control is missing");
-  for (const value of ["", "-1", "0.5", "2147484"]) {
+  for (const value of ["", "-1", "0.0005", "2147483.648", "2147484"]) {
     timeout.value = value; await timeout.fire("input"); await ui.elements.get("generate").fire("click");
     assert.equal(timeout.getAttribute("aria-invalid"), "true"); assert.equal(ui.document.activeElement, timeout);
   }

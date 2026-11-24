@@ -131,7 +131,7 @@ function Invoke-LabLocalReplacement {
   param([Parameter(Mandatory=$true)][string]$Archive, [Parameter(Mandatory=$true)][string]$SourceRoot,
     [Parameter(Mandatory=$true)]$Manifest, [Parameter(Mandatory=$true)][string[]]$Targets,
     [Parameter(Mandatory=$true)][string]$MagpieExe, [Parameter(Mandatory=$true)][string]$PluginSpec, [ValidateRange(0,65535)][int]$Port = 3489,
-    [string[]]$RemovedFiles = @())
+    [string[]]$RemovedFiles = @(), [switch]$KeepDisabledOnRollback)
   $ErrorActionPreference = 'Stop'
   $expected = Confirm-LabArchive $Archive $SourceRoot $Manifest
   $obsolete = @{}
@@ -192,7 +192,9 @@ function Invoke-LabLocalReplacement {
         } catch { $recovery += $_.Exception.Message }
       }
       foreach ($entry in $entries) { try { Assert-LabInventory (Get-LabDirectoryInventory $entry.target) $entry.original } catch { $recovery += $_.Exception.Message } }
-      if (-not $recovery.Count) {
+      if (-not $recovery.Count -and $KeepDisabledOnRollback) {
+        $recovery += 'Old directories were restored and verified; plugin remains disabled until data compatibility is verified'
+      } elseif (-not $recovery.Count) {
         try { Invoke-LabPluginCommand $MagpieExe $PluginSpec 'on'; $recovery += 'Old directories were restored, verified and re-enabled' }
         catch { $recovery += $_.Exception.Message; try { Invoke-LabPluginCommand $MagpieExe $PluginSpec 'off' } catch { $recovery += $_.Exception.Message } }
       } else { $recovery += 'Plugin remains disabled; recover from the preserved backups' }

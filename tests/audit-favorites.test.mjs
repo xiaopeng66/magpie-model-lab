@@ -20,9 +20,9 @@ async function setup(t) {
 }
 
 test("007: manager edits, removals, plans and concurrency commit in one atomic configuration write", async t => {
-  const { favorites, one, two, store } = await setup(t), atomic = store.atomic;
+  const { favorites, one, two } = await setup(t), replace = favorites.file.replace;
   let writes = 0;
-  t.mock.method(store, "atomic", async function (...args) { writes++; return atomic.apply(this, args); });
+  t.mock.method(favorites.file, "replace", async function (...args) { if (args[0] === favorites.path) writes++; return replace.apply(this, args); });
   await favorites.manage({ edits: [{ id: two.id, modelId: two.modelId, maxTokens: 1200 }], removeIds: [one.id], concurrency: 7 });
   const saved = JSON.parse(await readFile(favorites.path, "utf8"));
   assert.equal(writes, 1); assert.equal(saved.favorites.length, 1); assert.equal(saved.favorites[0].id, two.id);
@@ -41,7 +41,7 @@ test("007: a missing later removal cannot partially delete an earlier favorite o
 test("007: manager disk failure preserves every setting and the same operation can be retried", async t => {
   const { favorites, one, two, store } = await setup(t), before = await readFile(favorites.path, "utf8"), state = structuredClone(favorites.state);
   const operation = { edits: [{ id: two.id, modelId: two.modelId, maxTokens: 0 }], removeIds: [one.id], concurrency: 0 };
-  t.mock.method(store, "atomic", async () => { throw new Error("fixture disk unavailable"); });
+  t.mock.method(favorites.file, "replace", async () => { throw new Error("fixture disk unavailable"); });
   await assert.rejects(() => favorites.manage(operation), /disk unavailable/);
   assert.equal(await readFile(favorites.path, "utf8"), before); assert.deepEqual(favorites.state, state);
   t.mock.restoreAll(); await favorites.manage(operation);
@@ -87,9 +87,9 @@ async function managerUI(t, fixture, handler) {
 const controls = ui => ["drawer-content", "drawer-footer"].flatMap(id => ui.descendants(ui.elements.get(id), "button"));
 
 test("007: manager UI retains all favorites on failed save and retries the same complete draft", async t => {
-  const fixture = await setup(t), { favorites, one, two, store } = fixture, originalAtomic = store.atomic;
+  const fixture = await setup(t), { favorites, one, two } = fixture, originalReplace = favorites.file.replace;
   let failurePending = true, failingWrite = false;
-  t.mock.method(store, "atomic", async function (...args) { if (failingWrite) throw new Error("fixture disk unavailable"); return originalAtomic.apply(this, args); });
+  t.mock.method(favorites.file, "replace", async function (...args) { if (failingWrite) throw new Error("fixture disk unavailable"); return originalReplace.apply(this, args); });
   const ui = await managerUI(t, fixture, async (path, body) => {
     if (path === "api/favorites") return favorites.snapshot();
     failingWrite = failurePending && (path === "api/favorites/manage" || path === "api/favorites/remove" && body.id === two.id);
@@ -114,9 +114,9 @@ test("007: manager UI retains all favorites on failed save and retries the same 
 });
 
 test("007: plan UI does not commit parameters before a failed schedule write and can retry", async t => {
-  const fixture = await setup(t), { favorites, one, store } = fixture, originalAtomic = store.atomic;
+  const fixture = await setup(t), { favorites, one } = fixture, originalReplace = favorites.file.replace;
   let failurePending = true, failingWrite = false;
-  t.mock.method(store, "atomic", async function (...args) { if (failingWrite) throw new Error("fixture schedule disk failure"); return originalAtomic.apply(this, args); });
+  t.mock.method(favorites.file, "replace", async function (...args) { if (failingWrite) throw new Error("fixture schedule disk failure"); return originalReplace.apply(this, args); });
   const ui = await managerUI(t, fixture, async (path, body) => {
     if (path === "api/favorites") return favorites.snapshot();
     failingWrite = failurePending && path === "api/schedules/save"; if (failingWrite) failurePending = false;

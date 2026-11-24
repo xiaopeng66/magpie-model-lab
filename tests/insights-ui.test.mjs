@@ -4,6 +4,7 @@ import { uiHarness } from "./ui-harness.mjs";
 import { waitFor } from "./helpers.mjs";
 import { summary } from "../lib/result.mjs";
 import { abnormalRetest } from "../lib/retest.mjs";
+import { legacyReasoningTask } from './legacy-task-fixtures.mjs';
 
 const record = (id, fields = {}) => ({ id, batchId: "batch", kind: "candy", model: "fixture/one", modelName: "one", provider: "fixture", providerName: "Fixture",
   createdAt: "2026-11-20T01:00:00Z", status: "completed", effort: "", maxTokens: 1200, concurrency: 3, prompt: "原题面 A", content: "最终答案：21",
@@ -17,6 +18,18 @@ const openCard = async (ui, id, host = "candy-results") => {
   await controls(ui, card).find(button => button.textContent === "查看详情").fire("click");
   return card;
 };
+
+test('same-condition alerts expose the three source records only in result details', async () => {
+  const sources = [1, 2, 3].map(i => record('auth-' + i, { createdAt: `2026-11-22T0${i}:00:00Z`, startedAt: `2026-11-22T0${i}:00:00Z`, status: 'error', failureKind: 'auth', upstreamStatus: 401, physicalRequests: [{ state: 'started' }] }));
+  const ui = await uiHarness({ bootstrap: boot(sources), detail: id => ({ ...sources.find(run => run.id === id), ...summary(sources.find(run => run.id === id)) }), search: '?view=candy' });
+  await openCard(ui, 'auth-3'); const warning = elementsWith(ui, ui.elements.get('drawer-content'), 'condition-alert')[0]; assert.ok(warning); assert.equal(warning.hidden, false); assert.equal(controls(ui, warning).length, 3);
+});
+
+test('experiment details show separate submitted, executed and gradable denominators', async () => {
+  const task = legacyReasoningTask(), sources = [record('match', { task, prompt: task.prompt, experimentId: 'experiment', physicalRequests: [{ state: 'started' }], grade: { verdict: 'match', expected: 42, answer: 42 } }), record('failed', { task, prompt: task.prompt, experimentId: 'experiment', physicalRequests: [{ state: 'started' }], status: 'error', failureKind: 'timeout', grade: { verdict: 'incomplete', expected: 42, answer: null } })];
+  const ui = await uiHarness({ bootstrap: boot(sources), detail: id => ({ ...sources.find(run => run.id === id), ...summary(sources.find(run => run.id === id)) }), search: '?view=candy' }); await openCard(ui, 'match');
+  const detail = elementsWith(ui, ui.elements.get('drawer-content'), 'experiment-statistics')[0]; assert.ok(detail); assert.ok(ui.descendants(detail).some(node => node.textContent.includes('提交 2') && node.textContent.includes('实际执行 2'))); assert.ok(ui.descendants(detail).some(node => node.textContent.includes('1/1') && node.textContent.includes('1/2')));
+});
 
 test("failed candy cards and detail explain the timeout and preserve the original-condition retest entry", async () => {
   const source = record("timeout", { status: "error", error: "生成超时，已终止上游请求", candy: { version: "shape-choice-v1", expected: 21, verdict: "incomplete", answer: null } });
@@ -51,9 +64,12 @@ test("the collapsed detail trend only includes matching conditions and can open 
   await waitFor(() => elementsWith(ui, trend, "trend-rate")[0].textContent === "100%");
   assert.equal(trend.open, true, "Refreshing evidence must preserve the user's disclosure state");
   const previous = elementsWith(ui, trend, "trend-point").find(point => point.dataset.runId === "previous");
+  ui.elements.get('history-search').value = 'text that hides the source';
   await previous.fire("click");
   assert.equal(ui.elements.get("history-tab").getAttribute("aria-selected"), "true");
   assert.equal(ui.elements.get("history-filter").value, "candy"); assert.equal(ui.elements.get("history-source").value, "manual");
+  assert.equal(ui.elements.get('history-search').value, '');
+  assert.ok(ui.descendants(ui.elements.get('history-list')).some(element => element.className === 'history-item'));
   assert.equal(ui.elements.get("favorite-drawer").hidden, true);
 });
 

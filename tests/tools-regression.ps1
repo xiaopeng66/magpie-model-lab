@@ -40,7 +40,7 @@ function New-TestProject([string]$Name, [switch]$MissingIndex) {
   }
   return $root
 }
-function New-InstallFixture([string]$Name, [string[]]$RemovedFiles = @()) {
+function New-InstallFixture([string]$Name, [string[]]$RemovedFiles = @(), [switch]$KeepDisabledOnRollback) {
   $root = New-TestProject $Name
   $files = @(Get-ChildItem -LiteralPath $root -File -Recurse -Force | Where-Object { -not $_.FullName.StartsWith((Join-Path $root '.test-data') + '\', [StringComparison]::OrdinalIgnoreCase) })
   $out = Assert-TestPath (Join-Path $toolsTestRoot ($Name + '-output'))
@@ -80,6 +80,7 @@ Invoke-LabLocalReplacement -Archive $archive -SourceRoot $taskRoot -Manifest $ma
     $removedArgument = " -RemovedFiles @(" + (($RemovedFiles | ForEach-Object { "'" + $_.Replace("'","''") + "'" }) -join ',') + ')'
     $source = $source.Replace("-PluginSpec 'fixture'", "-PluginSpec 'fixture'" + $removedArgument)
   }
+  if ($KeepDisabledOnRollback) { $source = $source.Replace("-PluginSpec 'fixture'", "-PluginSpec 'fixture' -KeepDisabledOnRollback") }
   Check ($source -notmatch '(?i)[A-Z]:\\Users\\[^\\]+\\(?:\.config\\magpie|\.magpie|AppData\\(?:Local|Roaming)\\magpie)') 'The fixture installer references a real user installation'
   $installer = Join-Path $toolsTestRoot ($Name + '-installer.ps1'); Write-TestFile $installer $source
   $global:labToolsTestFirstTarget = $targets[0]; $global:labToolsTestSecondTarget = $targets[1]
@@ -220,6 +221,15 @@ try {
     foreach ($target in $fixture.targets) { Check ((Get-Content -LiteralPath (Join-Path $target 'index.mjs') -Raw) -eq 'old-version') 'Activation failure left the new version installed' }
     $modes = (Get-Content -LiteralPath $fixture.log) -join ','
     Check ($modes -eq 'off,on,off,on') "Unexpected activation rollback modes ($modes): $activationError"
+  }
+  Invoke-Case '016 a data-sensitive upgrade restores old code but keeps it disabled after attempted activation' {
+    $fixture = New-InstallFixture 'data-sensitive-upgrade' -KeepDisabledOnRollback; $global:labToolsTestFault = 'enable-once'
+    try { & $fixture.installer | Out-Null; throw 'Expected protected activation failure' }
+    catch { $activationError = $_.Exception.Message; Check ($activationError -notmatch 'Expected protected activation failure') 'Activation failure was not injected' }
+    foreach ($target in $fixture.targets) { Check ((Get-Content -LiteralPath (Join-Path $target 'index.mjs') -Raw) -eq 'old-version') 'The verified old code was not restored' }
+    $modes = if (Test-Path -LiteralPath $fixture.log) { (Get-Content -LiteralPath $fixture.log) -join ',' } else { '' }
+    Check ($modes -eq 'off,on,off') "Old code was activated against possibly upgraded data ($modes): $activationError"
+    Check ($activationError -match 'remains disabled.*data') 'The recovery report omitted the data compatibility boundary'
   }
   Invoke-Case '016 repeated activation failure retains the verified old files and ends disabled' {
     $fixture = New-InstallFixture 'enable-fails'; $global:labToolsTestFault = 'enable-fails'

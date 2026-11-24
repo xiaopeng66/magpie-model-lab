@@ -1,5 +1,6 @@
 import { failureInfo } from "../lib/diagnostics.mjs";
-import { recentTrend } from "../lib/comparison.mjs";
+import { recentTrend, conditionAlerts } from "../lib/comparison.mjs";
+import { experimentStats } from '../lib/experiments.mjs';
 
 const duration = value => value === null ? "—" : `${(value / 1000).toFixed(1)} s`;
 const tokens = value => value === null ? "—" : value.toLocaleString("en-US", { maximumFractionDigits: 1 });
@@ -10,6 +11,10 @@ export function createResultInsights(document, { onSource, timeZone } = {}) {
   const when = at => new Date(at).toLocaleString("zh-CN", { timeZone, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
   const root = node("section", "result-insights"), diagnosis = node("section", "result-diagnosis"), label = node("strong", "diagnosis-label"), advice = node("p", "diagnosis-advice");
   diagnosis.hidden = true; diagnosis.setAttribute("role", "status"); diagnosis.setAttribute("aria-live", "polite"); diagnosis.append(label, advice);
+  const alerts = node('section', 'condition-alert result-diagnosis'), alertLabel = node('strong', 'diagnosis-label'), alertBody = node('p', 'help'), sources = node('div', 'phase-settings-actions');
+  alerts.hidden = true; alerts.dataset.tone = 'warning'; alerts.setAttribute('role', 'status'); alerts.append(alertLabel, alertBody, sources);
+  const experiment = node('details', 'experiment-statistics settings-details phase-settings-group'), experimentToggle = node('summary', 'trend-toggle', '本组重复统计'), experimentCounts = node('p', 'help'), experimentRates = node('p', 'help'), experimentDurations = node('p', 'help');
+  experiment.hidden = true; experiment.append(experimentToggle, experimentCounts, experimentRates, experimentDurations);
   const trend = node("details", "result-trend"), toggle = node("summary", "trend-toggle", "同模型近期趋势"), body = node("div", "trend-body"), metrics = node("div", "trend-metrics");
   const rate = node("strong", "trend-rate"), rateLabel = node("span"), elapsed = node("strong"), elapsedLabel = node("span"), total = node("strong"), totalLabel = node("span");
   for (const [value, caption] of [[rate, rateLabel], [elapsed, elapsedLabel], [total, totalLabel]]) { const metric = node("div", "trend-metric"); metric.append(value, caption); metrics.append(metric); }
@@ -18,14 +23,27 @@ export function createResultInsights(document, { onSource, timeZone } = {}) {
   const scroll = node("div", "trend-table-scroll"), table = node("table", "trend-table"), head = node("thead"), row = node("tr"), rows = node("tbody");
   scroll.setAttribute("role", "region"); scroll.setAttribute("aria-label", "同模型近期记录"); scroll.setAttribute("tabindex", "0"); table.setAttribute("aria-label", "相同条件下的近期结果");
   for (const title of ["时间", "结果", "耗时", "总 Token"]) { const cell = node("th", "", title); cell.setAttribute("scope", "col"); row.append(cell); }
-  head.append(row); table.append(head, rows); scroll.append(table); body.append(metrics, note, candidate, track, help, scroll); trend.append(toggle, body); root.append(diagnosis, trend);
+  head.append(row); table.append(head, rows); scroll.append(table); body.append(metrics, note, candidate, track, help, scroll); trend.append(toggle, body); root.append(diagnosis, alerts, experiment, trend);
   trend.open = false;
   let signature = ""; const controls = new Map();
   return { root, update(run, records, context = {}) {
     const cause = failureInfo(run, context); diagnosis.hidden = !cause;
     if (cause) { diagnosis.dataset.cause = cause.code; diagnosis.dataset.tone = cause.tone; text(label, cause.label); text(advice, cause.advice); }
-    const values = recentTrend(run, records), next = JSON.stringify(values);
+    const values = recentTrend(run, records), warnings = conditionAlerts(run, records), stats = run.experimentId ? experimentStats(run, records) : null, next = JSON.stringify([values, warnings, stats]);
     if (next === signature) return; signature = next;
+    alerts.hidden = !warnings.consecutive && warnings.slowdown.status !== 'slower'; sources.replaceChildren();
+    if (!alerts.hidden) {
+      text(alertLabel, '同条件异常提示');
+      text(alertBody, (warnings.consecutive ? `连续 3 次实际执行出现${({ authentication: '认证错误', 'rate-limit': '限流', timeout: '超时', mismatch: '答案不匹配' })[warnings.consecutive.code]}。` : '') + (warnings.slowdown.status === 'slower' ? `最近 5 次耗时中位数 ${duration(warnings.slowdown.recentMedianMs)}，前 10 次 ${duration(warnings.slowdown.previousMedianMs)}，超过 2 倍且增加至少 30 秒。` : '') + '仅依据当前保留的同账号、同题面与同规则历史。');
+      const ids = warnings.consecutive?.runIds || warnings.slowdown.runIds;
+      for (const id of ids) { const run = records.find(run => run.id === id), control = node('button', 'quiet', run ? when(run.createdAt) : id); control.type = 'button'; control.disabled = !onSource; control.setAttribute('aria-label', '查看异常依据 ' + id); control.addEventListener('click', () => onSource?.(id)); sources.append(control); }
+    }
+    experiment.hidden = !stats;
+    if (stats) {
+      text(experimentCounts, `提交 ${stats.submitted} · 实际执行 ${stats.executed} · 完成 ${stats.completed} · 可判分 ${stats.gradable} · 匹配 ${stats.matches} · 失败 ${stats.failed} · 取消 ${stats.cancelled}`);
+      text(experimentRates, `命中/可判分：${stats.matchRate === null ? '无可用样本' : `${stats.matches}/${stats.gradable} (${stats.matchRate.toFixed(1)}%)`}；命中/已执行：${stats.executedMatchRate === null ? '无可用样本' : `${stats.matches}/${stats.executed} (${stats.executedMatchRate.toFixed(1)}%)`}`);
+      text(experimentDurations, `同目标、同题与完整条件组；有效耗时 ${stats.elapsedCount} 条，中位数 ${duration(stats.elapsedMedian)}，最小 ${duration(stats.minMs)}，最大 ${duration(stats.maxMs)}，P90 ${stats.p90Ms === null ? '至少需要 10 条有效耗时' : duration(stats.p90Ms)}。${run.experiment ? `本次共 ${run.experiment.repeatCount} 轮，最多 ${run.experiment.plannedRequests} 次物理请求。` : ''}`);
+    }
     text(toggle, `同模型近期趋势 · ${values.available ? `${values.attempts} 条${values.insufficient ? " · 样本不足" : ""}` : "原条件不完整"}`);
     const denominator = run.kind === "candy" ? values.valid : values.attempts;
     text(rate, values.rate === null ? "—" : `${Math.round(values.rate)}%`); text(rateLabel, `${values.rateLabel} · ${values.successes}/${denominator}`);

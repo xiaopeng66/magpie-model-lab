@@ -4,6 +4,18 @@ import { createBatchRetest } from './batch-retest.mjs';
 import { openRetestDrawer } from './retest.mjs';
 import { failureInfo } from '../lib/diagnostics.mjs';
 import { createResultInsights } from './result-insights.mjs';
+import { createSettingsUI } from './settings.mjs';
+import { mergeProgress, createRuntimeClock, createRunProgressView } from './run-progress.mjs';
+import { createAccountTargets } from './account-targets.mjs';
+import { createExperimentControls, repeatedResultGroups } from './experiments.mjs';
+import { createRunNotes } from './run-notes.mjs';
+import { targetLabel, normalizeTarget } from '../lib/targets.mjs';
+import { readGrade, suiteCatalog } from '../lib/suites.mjs';
+import { historyMatches } from '../lib/history-index.mjs';
+import { createLabTools } from './lab-tools.mjs';
+import { createPresetManager } from './presets.mjs';
+import { generationTimeoutFromSeconds } from '../lib/test-parameters.mjs';
+import { createChangelog } from './changelog.mjs';
 
 (() => {
   "use strict";
@@ -12,6 +24,7 @@ import { createResultInsights } from './result-insights.mjs';
   const models = new Map(), selected = new Map(), selectedAccounts = new Map(), runs = new Map(), cards = new Map();
   const removed = new Set(), deleting = new Set(), historyItems = new Map(), pendingRenders = new Set(), previewCards = new WeakMap();
   const historyDays = new Map(), runningItems = new Map();
+  const repeatedLayouts = new WeakMap();
   let historyGroups = new Map(), historyKeys = new Map(), dailyPreview = null, historyTimeZone;
   let historyPosition = null, historyScrollFrame = null;
   let resultDetail = null;
@@ -28,11 +41,20 @@ import { createResultInsights } from './result-insights.mjs';
   let defaults = "", activeView = "current", batchCleanup = false, openDataDir = false, cleaning = false, streaming = false, reconnecting = false, renderFrame = null;
   let executionView = "current", creating = false, addingFavorites = false, fingerprintAvailable = false, batchCancel = false, batchExport = false, retestAvailable = false, bankUpdating = false, cachedAccounts = [], accountsLoaded = false, accountsLoading = false;
   const concurrencyDrafts = { current: "2", fingerprint: "3", candy: "3" };
+  const rememberedEfforts = { pelican: {}, candy: {}, fingerprint: {} };
+  const annotationByRun = new Map(), annotationRevisions = new Map();
+  const annotationLocalRevisions = new Map(); let notesAvailable = false, historyFilters = {};
+  let annotationRevision = 0, annotationsAvailable = false, annotationsError = "", cleanupPaused = false, localSettingsPanel = null, localRetentionDraft = null;
+  let updateParameterRecovery = null;
+  const settingsKind = view => view === "current" ? "pelican" : view;
   const tokenLabel = value => value === 0 ? "不设输出上限" : `${value ?? 64000} Token`;
   const timeoutLabel = value => value === 0 ? "不设超时" : `超时 ${(value ?? 600000) / 1000} 秒`;
   const concurrencyLabel = run => run.concurrency === 0 ? "不设并行上限" : `并行 ${run.concurrency ?? (run.kind === "fingerprint" || run.kind === "candy" ? 3 : 2)}`;
   const kindLabel = kind => ({ pelican: "动画", fingerprint: "指纹", candy: "糖果" })[kind || "pelican"];
-  const candyVerdict = run => run.status === "completed" ? run.candy?.verdict || "review" : "incomplete";
+  const questionCatalog = suiteCatalog();
+  const questionName = task => questionCatalog.find(suite => suite.id === task.suiteId && suite.version === task.suiteVersion)?.questions.find(question => question.id === task.questionId)?.name || (task.suiteId === 'reasoning-basics' ? { arithmetic: '括号与乘法（旧记录）', inventory: '库存变化（旧记录）', deduction: '条件推理（旧记录）' }[task.questionId] : '') || task.questionId;
+  const runCaption = run => [run.task && (run.task.suiteId !== 'shape-choice' || run.experiment?.repeatCount > 1) ? questionName(run.task) : '', run.experiment?.repeatCount > 1 && Number.isInteger(run.repetitionIndex) ? `第 ${run.repetitionIndex + 1}/${run.experiment.repeatCount} 轮` : ''].filter(Boolean).join(' · ');
+  const candyVerdict = run => run.status === "completed" ? readGrade(run)?.verdict || "review" : "incomplete";
   const candyVerdictLabel = run => ({ match: "答案匹配", mismatch: "答案不符", review: "待复核", incomplete: ({ error: "请求失败", cancelled: "已取消", interrupted: "已中断", truncated: "已截断" })[run.status] || "未完成" })[candyVerdict(run)];
   let favoritesAvailable = false, candyAvailable = false;
   let initialized = false, bootstrapping = false;
@@ -136,9 +158,163 @@ import { createResultInsights } from './result-insights.mjs';
   async function api(path, options = {}) {
     const response = await request(path, { ...options, headers: { "content-type": "application/json", ...options.headers } });
     const body = await response.json();
-    if (!response.ok) throw new Error(body.error || `请求失败 ${response.status}`);
+    if (!response.ok) throw Object.assign(new Error(body.error || `请求失败 ${response.status}`), { status: response.status });
     return body;
   }
+
+  const runtimeClock = createRuntimeClock({ now: () => performance.now() });
+  let progressConnected = true;
+  const settingsUI = createSettingsUI({ api, readFields(kind) {
+    const numeric = id => $(id).value.trim() ? Number($(id).value) : NaN;
+    let timeoutMs; try { timeoutMs = generationTimeoutFromSeconds($("generation-timeout").value); } catch { timeoutMs = NaN; }
+    const efforts = { ...rememberedEfforts[kind], ...Object.fromEntries(selected) };
+    return { maxTokens: numeric("max-tokens"), timeoutMs, concurrency: numeric("concurrency"),
+      ...(kind === "pelican" ? { prompt: $("prompt").value } : kind === "fingerprint" ? { api: $("fp-api").value || "auto", strict: $("fp-strict").checked, serviceTier: $("fp-tier").value || "default" } : {}),
+      ...(Object.keys(efforts).length ? { effortByModel: efforts } : {}) };
+  }, writeFields(value, kind) {
+    for (const [id, key] of [["max-tokens", "maxTokens"], ["generation-timeout", "timeoutMs"], ["concurrency", "concurrency"]]) $(id).value = Number.isFinite(value[key]) ? String(id === "generation-timeout" ? value[key] / 1000 : value[key]) : "";
+    if (kind === "pelican") { $("prompt").value = value.prompt; promptSummary(); }
+    if (kind === "fingerprint") { $("fp-api").value = value.api; $("fp-tier").value = value.serviceTier; $("fp-strict").checked = value.strict; }
+    rememberedEfforts[kind] = { ...value.effortByModel };
+    for (const id of selected.keys()) selected.set(id, rememberedEfforts[kind][id] || "");
+    renderSelected();
+  }, setSaveStatus(value) {
+    text($("settings-save-status"), value.message); $("settings-save-status").dataset.error = String(["failed", "conflict"].includes(value.state));
+    $("settings-retry").hidden = !["failed", "conflict"].includes(value.state);
+  }, onStateChange(value) {
+    $("local-settings").hidden = !value.capabilities.memory; $("settings-feedback").hidden = !value.capabilities.memory;
+    $("settings-retry").disabled = Boolean(value.recoveryError);
+    $("history-retention").disabled = !value.capabilities.retention || cleanupPaused;
+    $("preset-controls").hidden = $("manage-presets").hidden = !value.capabilities.presets;
+    renderPresetCatalog();
+    resultDetail?.progressView?.update();
+    updateParameterRecovery?.();
+    if (value.capabilities.retention) retentionNote(value.retention.days);
+    if (localSettingsPanel && value.state === "saved" && localSettingsPanel.preview && value.retention.days === localSettingsPanel.days()) {
+      localRetentionDraft = null; localSettingsPanel.preview = null; text(localSettingsPanel.status, "保留策略已保存，下一清理周期按实时截止时间执行。"); localSettingsPanel.save.disabled = true;
+    }
+  }, timers: { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: id => clearTimeout(id) } });
+
+  function retentionNote(days) { text($("retention-note"), cleanupPaused ? "清理已暂停" : days === null ? "永久保留" : `保留 ${days === undefined ? 7 : days} 天`); }
+  function applyAnnotation(value, updateHistory = true) {
+    if (!value || !Number.isSafeInteger(value.revision) || value.revision < 0 || !value.runId) return;
+    annotationRevision = Math.max(annotationRevision, value.revision);
+    if (value.revision < (annotationRevisions.get(value.runId) ?? -1)) return;
+    annotationRevisions.set(value.runId, value.revision);
+    annotationLocalRevisions.set(value.runId, value.runRevision ?? value.annotation?.revision ?? 0);
+    if (value.annotation && (value.annotation.protected || value.annotation.note || value.annotation.tags?.length)) annotationByRun.set(value.runId, value.annotation); else annotationByRun.delete(value.runId);
+    if (resultDetail?.id === value.runId) renderResultDetail();
+    if (updateHistory) renderHistory();
+  }
+  function applyAnnotationProjection(value) {
+    if (!value || !Array.isArray(value.scopeRunIds)) return;
+    for (const runId of value.scopeRunIds) applyAnnotation({ revision: value.revision, runId, annotation: value.byRunId?.[runId] || null }, false);
+    renderHistory();
+  }
+
+  function openLocalSettings() {
+    const content = favoritesUI.openDrawer("本地设置", $("local-settings"), "compact", () => { localSettingsPanel = null; updateParameterRecovery = null; });
+    content.classList.add("phase-tool-content");
+    content.append(node("p", "help", "按类别调整插件运行。历史保留时间可在“历史记录”页设置。"));
+    const runtime = node("div", "phase-local-runtime");
+    if (settingsUI.snapshot().capabilities.progressNotice) {
+      const group = node("section", "phase-tool-section"), body = node("div", "phase-form-body"), label = node("label", "check-row"), enabled = node("input"), feedback = node("p", "help");
+      enabled.type = "checkbox"; enabled.checked = settingsUI.snapshot().progressNotice.enabled; enabled.disabled = Boolean(settingsUI.snapshot().recoveryError); enabled.setAttribute("aria-label", "长时间无响应时提醒");
+      label.append(enabled, node("span", "", "长时间无响应时提醒")); body.append(label, node("p", "help", "连续 120 秒没有有效响应时显示提醒。任务继续运行，停止时间仍由高级设置中的“生成超时”决定。"), feedback); group.append(node("h3", "", "生成提醒"), body); runtime.append(group);
+      feedback.setAttribute("role", "status");
+      enabled.addEventListener("change", async () => {
+        enabled.disabled = true;
+        try { const result = await settingsUI.savePatch({ progressNotice: { enabled: enabled.checked } }); text(feedback, result.state === "saved" ? "提醒设置已保存" : result.message || "保存尚未确认"); }
+        catch (err) { text(feedback, err.message); }
+        finally { enabled.disabled = Boolean(settingsUI.snapshot().recoveryError); }
+      });
+    }
+    const recovery = node("section", "phase-tool-section"), recoveryBody = node("div", "phase-form-body"), recoveryMessage = node("p", "form-error"), actions = node("div", "phase-settings-actions");
+    const retry = button("重试保存", () => settingsUI.retry()), local = button("使用本地草稿保存", () => settingsUI.resolveConflict("local")), server = button("使用服务器参数", () => settingsUI.resolveConflict("server"));
+    recoveryMessage.setAttribute("role", "status"); actions.append(retry, local, server);
+    recoveryBody.append(recoveryMessage, actions); recovery.append(node("h3", "", "参数保存异常"), recoveryBody); runtime.append(recovery);
+    updateParameterRecovery = () => {
+      const snapshot = settingsUI.snapshot(), conflict = snapshot.state === "conflict";
+      recovery.hidden = !snapshot.recoveryError && !["failed", "conflict"].includes(snapshot.state);
+      text(recoveryMessage, snapshot.recoveryError || snapshot.message || "参数保存尚未确认，当前草稿已保留。");
+      retry.hidden = conflict || Boolean(snapshot.recoveryError); local.hidden = server.hidden = !conflict;
+      actions.hidden = Boolean(snapshot.recoveryError);
+    };
+    updateParameterRecovery(); labTools.appendLocal(content, { runtime });
+    $("drawer-footer").append(button("完成", () => favoritesUI.closeDrawer()));
+  }
+  function openHistoryRetention() {
+    if ($("history-retention").disabled) return;
+    const content = favoritesUI.openDrawer("历史保留", $("history-retention"), "compact", () => { localSettingsPanel = null; });
+    content.classList.add("phase-tool-content");
+    content.append(node("p", "help", "设置历史记录保存多久。重要记录可以在详情中单独保护，清理时会保留。"));
+    appendRetentionSettings(content); $("drawer-footer").append(button("关闭", () => favoritesUI.closeDrawer()));
+  }
+  function appendRetentionSettings(content) {
+    const settings = settingsUI.snapshot(), group = node("section", "phase-tool-section"), body = node("div", "phase-form-body"), select = node("select"), custom = node("input"), status = node("p", "help");
+    group.append(node("h3", "", "保留时间"), body); select.setAttribute("aria-label", "保留策略");
+    for (const [value, label] of [["7", "7 天"], ["30", "30 天"], ["90", "90 天"], ["custom", "自定义天数"], ["permanent", "永久保留"]]) { const option = node("option", "", label); option.value = value; select.append(option); }
+    const saved = settings.retention.days;
+    select.value = localRetentionDraft?.selection || (saved === null ? "permanent" : [7, 30, 90].includes(saved) ? String(saved) : "custom");
+    custom.type = "number"; custom.min = "1"; custom.max = "36500"; custom.step = "1"; custom.value = localRetentionDraft?.custom || String(saved ?? 30); custom.setAttribute("aria-label", "自定义保留天数");
+    const selectionRow = node("label", "editor-field"); selectionRow.append(node("span", "help", "保留策略"), select);
+    const customRow = node("label", "editor-field"); customRow.append(node("span", "help", "自定义天数 · 1–36500"), custom); customRow.hidden = select.value !== "custom";
+    status.setAttribute("role", "status"); status.id = "phase-retention-status"; select.setAttribute("aria-describedby", status.id); custom.setAttribute("aria-describedby", status.id);
+    const panel = { status, preview: null, days() {
+      const value = select.value === "permanent" ? null : select.value === "custom" ? custom.value.trim() ? Number(custom.value) : NaN : Number(select.value);
+      if (!(value === null || Number.isInteger(value) && value >= 1 && value <= 36500)) throw new Error("保留天数需为 1–36500 的整数"); return value;
+    } }; localSettingsPanel = panel;
+    const preview = button("预览影响", async () => {
+      if (preview.disabled) return; preview.disabled = true; text(status, "正在预览影响…");
+      try {
+        const days = panel.days(); custom.removeAttribute("aria-invalid");
+        const memory = await settingsUI.flush(); if (memory.state !== "saved") throw new Error("参数保存尚未确认，请完成保存后再预览");
+        const value = await settingsUI.read("api/retention/preview", { method: "POST", body: JSON.stringify({ days }) });
+        if (localSettingsPanel !== panel || panel.days() !== days) return;
+        panel.preview = value; panel.save.disabled = false;
+        const bytes = amount => Number(amount || 0).toLocaleString();
+        text(status, `${value.candidateCount} 条到期候选；保护跳过 ${value.skippedProtected || 0} 条，活动跳过 ${value.skippedActive || 0} 条。元数据 ${bytes(value.estimatedMetadataBytes)} 字节，实测文件${value.partial ? "至少" : ""} ${bytes(value.measuredFileBytes)} 字节${value.partial ? "（统计未完成）" : ""}。保存不会立即删除文件。`);
+      } catch (err) { if (localSettingsPanel === panel) { text(status, err.message); custom.setAttribute("aria-invalid", "true"); } }
+      finally { preview.disabled = false; }
+    });
+    panel.save = button("保存保留策略", async () => {
+      if (!panel.preview || panel.save.disabled) return;
+      const selectedPreview = panel.preview;
+      const days = panel.days(), before = settingsUI.snapshot().retention.days, shorter = days !== null && (before === null || days < before);
+      if (shorter && !await confirmAction("缩短历史保留期", `当前预览有 ${panel.preview.candidateCount} 条到期候选。受保护记录保留；保存后下一清理周期重新计算，未来到期记录也适用。`, "确认缩短")) return;
+      if (localSettingsPanel !== panel || panel.preview !== selectedPreview || panel.days() !== days) return;
+      panel.save.disabled = preview.disabled = true;
+      try {
+        const result = await settingsUI.savePatch({ retention: { days } }, { previewToken: shorter ? selectedPreview.previewToken : undefined });
+        if (localSettingsPanel === panel) text(status, result.state === "saved" ? "保留策略已保存，下一清理周期生效。" : result.message || "保存尚未确认，请查看参数保存状态。");
+      } finally { preview.disabled = false; }
+    }, "primary"); panel.save.disabled = true;
+    const edited = () => { localRetentionDraft = { selection: select.value, custom: custom.value }; customRow.hidden = select.value !== "custom"; panel.preview = null; panel.save.disabled = true; text(status, "请预览影响后保存保留策略。"); };
+    select.addEventListener("change", edited); custom.addEventListener("input", edited);
+    const actions = node("div", "phase-settings-actions"); actions.append(preview, panel.save);
+    body.append(selectionRow, customRow, node("p", "help", "按完成时间计算保留期限，启动时及每小时清理到期记录。永久保留仍可手动清理；受保护记录始终跳过。"), actions, status); content.append(group);
+  }
+  $("local-settings").addEventListener("click", openLocalSettings);
+  $("history-retention").addEventListener("click", openHistoryRetention);
+  $("settings-retry").addEventListener("click", () => settingsUI.snapshot().state === "conflict" ? openLocalSettings() : settingsUI.retry());
+  function renderPresetCatalog() {
+    const snapshot = settingsUI.snapshot(), currentKind = settingsKind(executionView);
+    const fill = (select, filterKind) => {
+      const catalog = (snapshot.presetCatalog || []).filter(p => p.kind === filterKind), signature = JSON.stringify(catalog);
+      if (select.dataset.catalog === signature) return;
+      const prior = select.value; select.replaceChildren(); const empty = node("option", "", catalog.length ? "选择已保存的方案" : "还没有保存的方案"); empty.value = ""; select.append(empty);
+      for (const preset of catalog) { const option = node("option", "", preset.name); option.value = preset.id; select.append(option); }
+      select.value = catalog.some(p => p.id === prior) ? prior : ""; select.dataset.catalog = signature; select.disabled = !catalog.length;
+    };
+    fill($("preset-select"), currentKind);
+    presetManager.updateCatalog();
+  }
+  $("preset-select").addEventListener("change", async () => {
+    const id = $("preset-select").value; if (!id) return;
+    try { await settingsUI.loadPreset(id); error(""); }
+    catch (err) { error(err.message); }
+  });
+  $("manage-presets").addEventListener("click", () => presetManager.open());
 
   function modelLabel(model, all) {
     const id = typeof model.id === "string" ? model.id : "", route = typeof model.provider === "string" ? model.provider : "";
@@ -159,7 +335,7 @@ import { createResultInsights } from './result-insights.mjs';
       const label = node("label", "model-option");
       const input = document.createElement("input"); input.type = "checkbox"; input.value = model.id; input.checked = selected.has(model.id);
       input.addEventListener("change", () => {
-        if (input.checked) selected.set(model.id, ""); else { selected.delete(model.id); selectedAccounts.delete(model.id); }
+        if (input.checked) selected.set(model.id, settingsUI.snapshot().capabilities.memory ? rememberedEfforts[settingsKind(executionView)]?.[model.id] || "" : ""); else { selected.delete(model.id); selectedAccounts.delete(model.id); }
         error(""); renderSelected();
       });
       input.setAttribute("aria-label", `${modelLabel(model, true)} (${model.id})`); label.title = model.id;
@@ -182,16 +358,24 @@ import { createResultInsights } from './result-insights.mjs';
       const label = node("span", "selected-name"); label.title = modelLabel(model, true);
       label.append(node("span", "selected-model-title", modelLabel(model, false)), node("span", "selected-provider", model.providerName || model.provider)); row.append(label);
       const select = document.createElement("select"); select.setAttribute("aria-label", `${modelLabel(model, true)} 的思考档位`);
-      for (const level of ["", ...model.efforts]) { const option = node("option", "", level || "默认"); option.value = level; select.append(option); }
-      select.value = effort; select.addEventListener("change", () => selected.set(id, select.value));
+      for (const level of ["", ...model.efforts, ...(effort && !model.efforts.includes(effort) ? [effort] : [])]) { const option = node("option", "", level && !model.efforts.includes(level) ? `${level}（当前不支持）` : level || "默认"); option.value = level; select.append(option); }
+      select.value = effort; select.addEventListener("change", () => { selected.set(id, select.value); rememberedEfforts[settingsKind(executionView)][id] = select.value; settingsUI.changed(); });
       const remove = iconButton("close", `移除 ${id}`, () => {
         const position = [...selected.keys()].indexOf(id);
-        selected.delete(id); selectedAccounts.delete(id); renderSelected(); renderModels();
+        selected.delete(id); selectedAccounts.delete(id); accountTargets.remove(id); renderSelected(); renderModels();
         const remaining = [...container.querySelectorAll('.icon-button')];
         (remaining[Math.min(position, remaining.length - 1)] || $('model-search')).focus({ preventScroll: true });
       });
       row.append(select, remove); container.append(row);
-      if (executionView === "fingerprint" && $("fp-pin").checked) {
+      if (accountTargets.supported) {
+        const value = accountTargets.label(id), control = button("", () => accountTargets.open(model, control), 'account-target-button');
+        control.dataset.modelId = id;
+        const chevron = document.createElementNS("http://www.w3.org/2000/svg", "svg"), use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+        chevron.setAttribute("class", "icon"); chevron.setAttribute("aria-hidden", "true"); use.setAttribute("href", "#i-chevron"); chevron.append(use);
+        control.append(node("span", "account-target-label", "账号"), node("span", "account-target-value", value), chevron);
+        control.setAttribute('aria-label', `${modelLabel(model, true)} 的账号选择：${value}`); control.setAttribute('aria-haspopup', 'dialog'); control.setAttribute('aria-expanded', 'false'); control.title = value; row.append(control);
+      }
+      if (!accountTargets.supported && executionView === "fingerprint" && $("fp-pin").checked) {
         const accountRow = node("div", "account-row"), account = node("input"), datalist = node("datalist");
         datalist.id = `accounts-${[...selected.keys()].indexOf(id)}`;
         account.setAttribute("list", datalist.id); account.setAttribute("aria-label", `${modelLabel(model, true)} 的固定账号`);
@@ -201,6 +385,7 @@ import { createResultInsights } from './result-insights.mjs';
         accountRow.append(account, datalist); row.append(accountRow);
       }
     }
+    experimentControls.update();
   }
 
   function renderAccountOptions(datalist) {
@@ -214,7 +399,7 @@ import { createResultInsights } from './result-insights.mjs';
     models.clear(); for (const model of list) models.set(model.id, model);
     for (const [id, effort] of selected) {
       const model = models.get(id);
-      if (!model) { selected.delete(id); selectedAccounts.delete(id); } else if (effort && !model.efforts.includes(effort)) selected.set(id, "");
+      if (!model) { selected.delete(id); selectedAccounts.delete(id); accountTargets.remove(id); } else if (effort && !model.efforts.includes(effort) && (!settingsUI.snapshot().capabilities.memory || rememberedEfforts[settingsKind(executionView)]?.[id] !== effort)) selected.set(id, "");
     }
     const providers = new Map();
     for (const model of models.values()) {
@@ -241,7 +426,14 @@ import { createResultInsights } from './result-insights.mjs';
     historyKeys = new Map(all.flatMap(group => group.runs.map(run => [run.id, group.id])));
     const filter = $("history-filter").value;
     const sourceFilter = $("history-source").value;
-    const batches = new Map(all.filter(group => (!filter || group.runs.some(run => (run.kind || "pelican") === filter)) && (!sourceFilter || group.source === sourceFilter)).map(group => [group.id, group]));
+    const appliedConditions = Object.entries(historyFilters).filter(([, value]) => Array.isArray(value) ? value.length > 0 : typeof value === 'string' ? Boolean(value.trim()) : value !== undefined && value !== null);
+    text($('history-tools-label'), appliedConditions.length ? `筛选中 · ${appliedConditions.length}` : '更多筛选');
+    $('history-tools').dataset.filtered = String(appliedConditions.length > 0);
+    $('history-tools').setAttribute('aria-label', appliedConditions.length ? `更多筛选，已应用 ${appliedConditions.length} 项条件` : '更多筛选');
+    const conditionLabels = { model: '模型', account: '账号', from: '开始日期', to: '结束日期', result: '结果或诊断', protected: '保护状态', tags: '标签', note: '备注' };
+    $('history-tools').title = appliedConditions.length ? `已应用：${appliedConditions.map(([key]) => conditionLabels[key] || key).join('、')}` : '设置更多历史筛选条件';
+    const lightweightFilters = { ...historyFilters, text: $('history-search').value || '', ...(filter ? { kind: filter } : {}) };
+    const batches = new Map(all.filter(group => (!sourceFilter || group.source === sourceFilter) && group.runs.some(run => historyMatches(run, annotationByRun.get(run.id), lightweightFilters))).map(group => [group.id, group]));
     let selectedBatch = views.history.batchId;
     if (selectedBatch && !batches.has(selectedBatch)) {
       selectedBatch = views.history.ids.map(id => historyKeys.get(id)).find(id => batches.has(id));
@@ -281,7 +473,7 @@ import { createResultInsights } from './result-insights.mjs';
       const { root, row, name, badge, time, remove } = item;
       root.dataset.selected = String(selectedBatch === batchId);
       const label = unfinished ? `${states[status]} · ${completed}/${members.length}` : `${completed}/${members.length} 完成`;
-      row.title = members.map(run => `${run.modelName || run.model}：${states[run.status]}`).join("\n");
+      row.title = members.map(run => `${run.modelName || run.model}${targetLabel(run) ? ' · ' + targetLabel(run) : ''}：${states[run.status]}`).join("\n");
       const modelCount = group.modelIds.length;
       const batchTitle = daily ? `${group.date} ${kindLabel(group.kind)}每日批次` : `${when(members[0].createdAt)} ${kindLabel(members[0].kind)}批次`;
       row.setAttribute("aria-label", `${batchTitle}，${modelCount} 个模型，${members.length} 份结果，${label}`);
@@ -289,13 +481,13 @@ import { createResultInsights } from './result-insights.mjs';
       row.setAttribute('aria-expanded', String(selectedBatch === batchId)); row.setAttribute('aria-controls', 'history-detail');
       const kinds = [...new Set(members.map(run => run.kind || "pelican"))].map(kindLabel).join(" / ");
       const source = members[0].source === "automatic" ? "自动测试" : members[0].favoriteId ? "收藏记录" : "手动测试";
-      const modelNames = [...new Set(members.map(run => modelLabel({ id: run.model, name: run.modelName, provider: run.provider, providerName: run.providerName }, false)))];
+      const modelNames = [...new Set(members.map(run => modelLabel({ id: run.model, name: run.modelName, provider: run.provider, providerName: run.providerName }, false) + (targetLabel(run) ? ' · ' + targetLabel(run) : '')))];
       text(name, modelNames.join("、")); text(item.subtitle, `${source} · ${kinds}${daily ? '每日批次' : ''} · ${modelCount} 个模型`); badge.className = `badge ${status}`; text(badge, label);
       const timeRange = daily ? [group.times[0], group.times.at(-1)].slice(0, group.times.length === 1 ? 1 : 2).map(at => historyTime(at, historyTimeZone)).join('–') : when(group.createdAt);
       text(time, timeRange); time.dateTime = daily ? group.date : group.createdAt;
       text(remove, deleting.has(batchId) ? "删除中…" : "删除");
       remove.setAttribute("aria-label", `删除 ${batchTitle}及 ${members.length} 份结果文件`);
-      remove.disabled = !batchCleanup || unfinished > 0 || deleting.has(batchId) || cleaning;
+      remove.disabled = !batchCleanup || cleanupPaused || unfinished > 0 || deleting.has(batchId) || cleaning;
       remove.title = !batchCleanup ? "重新开启插件后可删除单批记录" : unfinished ? "本批任务结束后可删除" : "删除本批记录和生成文件";
       item.exportButton.hidden = !batchExport; item.exportButton.disabled = unfinished > 0 || deleting.has(batchId) || cleaning;
       item.exportButton.setAttribute("aria-label", `导出 ${batchTitle}：${modelNames.join('、')} JSON`); item.exportButton.title = item.exportButton.getAttribute('aria-label');
@@ -303,7 +495,7 @@ import { createResultInsights } from './result-insights.mjs';
     }
     if (!batches.size) {
       const placeholder = container.querySelector('.history-list-empty') || node('p', 'help history-list-empty');
-      text(placeholder, filter || sourceFilter ? '暂无匹配记录' : '暂无记录');
+      text(placeholder, filter || sourceFilter || lightweightFilters.text || Object.keys(historyFilters).length ? '暂无匹配记录' : '暂无记录');
       if (!placeholder.isConnected) container.append(placeholder);
     }
     if (selectedBatch) showBatch(selectedBatch, 'history', false);
@@ -339,7 +531,7 @@ import { createResultInsights } from './result-insights.mjs';
   $("confirm-dialog").addEventListener("cancel", event => { event.preventDefault(); confirmPending?.(false); });
 
   async function deleteBatch(batchId) {
-    if (!batchCleanup || cleaning || deleting.has(batchId)) return;
+    if (!batchCleanup || cleanupPaused || cleaning || deleting.has(batchId)) return;
     const group = historyGroups.get(batchId);
     if (!group || group.runs.some(active)) return;
     const request = group.source === "automatic" ? { mode: "daily", runIds: group.runs.map(run => run.id) } : { mode: "batch", batchId };
@@ -348,7 +540,7 @@ import { createResultInsights } from './result-insights.mjs';
     try {
       const outcome = await api("api/runs/cleanup", { method: "POST", body: JSON.stringify(request) });
       removeRuns(outcome.removed);
-      historyNotice(outcome.errors.length ? `已删除 ${outcome.removed.length} 份，${outcome.errors.length} 份删除失败：${outcome.errors[0].error}` : `已删除本批 ${outcome.removed.length} 份记录及文件`, outcome.errors.length > 0);
+      historyNotice((outcome.errors.length ? `已删除 ${outcome.removed.length} 份，${outcome.errors.length} 份删除失败：${outcome.errors[0].error}` : `已删除本批 ${outcome.removed.length} 份记录及文件`) + (outcome.skippedProtected ? `，保留 ${outcome.skippedProtected} 份受保护记录` : "") + (outcome.annotationErrors?.length ? "；孤立注释回收失败，记录文件的删除已完成" : ""), outcome.errors.length > 0);
     } catch (err) { historyNotice(err.message, true); }
     finally { deleting.delete(batchId); renderHistory(); cleanupControls(); }
   }
@@ -371,8 +563,11 @@ import { createResultInsights } from './result-insights.mjs';
     }
     if (!["history", "favorites"].includes(name)) {
       const changed = executionView !== name;
-      if (changed) { concurrencyDrafts[executionView] = $("concurrency").value; $("concurrency").value = concurrencyDrafts[name]; $("concurrency").removeAttribute("aria-invalid"); }
-      executionView = name; if (changed) renderSelected();
+      if (changed) {
+        if (!settingsUI.snapshot().capabilities.memory) { concurrencyDrafts[executionView] = $("concurrency").value; $("concurrency").value = concurrencyDrafts[name]; }
+        settingsUI.switchKind(settingsKind(name)); $("concurrency").removeAttribute("aria-invalid");
+      }
+      executionView = name; if (changed) { renderSelected(); renderPresetCatalog(); }
     }
     $("setup-sidebar").hidden = ["history", "favorites"].includes(name); $("workspace").dataset.wide = String($("setup-sidebar").hidden);
     if (name !== "favorites") favoritesUI.closeDrawer(); else { favoritesUI.render(); favoritesUI.refresh(); }
@@ -425,6 +620,7 @@ import { createResultInsights } from './result-insights.mjs';
 
   function openSourceRecord(id) {
     const run = runs.get(id); if (!run) return;
+    historyFilters = {}; $('history-search').value = '';
     $("history-filter").value = run.kind || "pelican";
     $("history-source").value = run.source === "automatic" ? "automatic" : run.favoriteId ? "favorites" : "manual";
     setView("history"); renderHistory(); showBatch(historyKeys.get(id), "history");
@@ -507,10 +703,7 @@ import { createResultInsights } from './result-insights.mjs';
       const source = group.runs.find(run => run.retest)?.retest;
       entry.retest.update(group.runs, { canRetest: retestAvailable, sourceAvailable: runs.has(source?.sourceRunId) });
       entry.root.setAttribute('aria-label', `${entry.title.textContent}，${entry.meta.textContent}`);
-      for (const [cardIndex, run] of group.runs.entries()) {
-        renderCard(run.id, name); const root = cards.get(`${name}:${run.id}`)?.root;
-        if (root && entry.grid.children[cardIndex] !== root) entry.grid.insertBefore(root, entry.grid.children[cardIndex] || null);
-      }
+      mountResultBatch(group.runs, name, entry.grid);
       if (container.children[index] !== entry.root) container.insertBefore(entry.root, container.children[index] || null);
     }
   }
@@ -534,6 +727,18 @@ import { createResultInsights } from './result-insights.mjs';
     });
   }
 
+  function mergeRunProgress(prior, incoming) {
+    const value = { ...incoming }, progress = mergeProgress(prior.progress, incoming.progress);
+    if (progress) value.progress = progress; else delete value.progress;
+    const sampleProgress = (sample, index) => {
+      const oldSample = prior.fingerprint?.samples?.[index] || prior.samples?.[index] || {};
+      const progress = mergeProgress(mergeProgress(oldSample.progress, prior.samples?.[index]?.progress), sample.progress);
+      return { ...sample, ...(progress ? { progress } : {}), ...(progress === oldSample.progress ? { startedAt: oldSample.startedAt, finishedAt: oldSample.finishedAt } : {}) };
+    };
+    if (incoming.samples) value.samples = incoming.samples.map(sampleProgress);
+    if (incoming.fingerprint?.samples) value.fingerprint = { ...incoming.fingerprint, samples: incoming.fingerprint.samples.map(sampleProgress) };
+    return value;
+  }
   function updateRun(value, updateHistory = true) {
     if (removed.has(value.id)) return;
     const prior = runs.get(value.id) || {};
@@ -542,14 +747,19 @@ import { createResultInsights } from './result-insights.mjs';
     const changed = Object.hasOwn(value, "status") && value.status !== prior.status;
     if (value.kind === "fingerprint" && Number.isFinite(value.revision) && Number.isFinite(prior.revision) && value.revision < prior.revision) return;
     const historyChanged = !prior.id || ["status", "batchId", "roundId", "scheduledAt", "createdAt", "model", "modelName", "source", "kind"].some(key => Object.hasOwn(value, key) && value[key] !== prior[key]);
-    Object.assign(prior, value);
+    value = mergeRunProgress(prior, value); Object.assign(prior, value); runtimeClock.observe(prior, value.runtimeTiming);
+    if (!active(prior)) delete prior.runtimeTiming;
     if (changed && !active(prior)) { prior.loaded = false; prior.loadError = ""; }
     runs.set(value.id, prior);
+    const addedToViews = [];
     for (const [name, view] of Object.entries(views)) {
-      if ((name === 'history' ? historyKeys.get(prior.id) : batchKey(prior)) === view.batchId && (name === "history" || name === "favorites" || (prior.kind || "pelican") === (name === "current" ? "pelican" : name)) && !view.ids.includes(value.id)) view.ids.push(value.id);
+      if ((name === 'history' ? historyKeys.get(prior.id) : batchKey(prior)) === view.batchId && (name === "history" || name === "favorites" || (prior.kind || "pelican") === (name === "current" ? "pelican" : name)) && !view.ids.includes(value.id)) {
+        view.ids.push(value.id); if (['current', 'fingerprint', 'candy'].includes(name)) addedToViews.push(name);
+      }
       refreshView(name);
     }
     renderShown(value.id);
+    for (const name of addedToViews) showBatch(views[name].batchId, name, false);
     if (historyChanged && updateHistory) renderHistory();
     else renderRunningBatches();
     if (prior.favoriteId) favoritesUI.render();
@@ -563,12 +773,15 @@ import { createResultInsights } from './result-insights.mjs';
   function removeRuns(ids) {
     const affectsExport = exportedBatch && ids.some(id => historyKeys.get(id) === exportedBatch);
     if (resultDetail && ids.includes(resultDetail.id)) favoritesUI.closeDrawer();
-    for (const id of ids) { removed.add(id); runs.delete(id); pendingRenders.delete(id); }
+    for (const id of ids) { removed.add(id); runs.delete(id); runtimeClock.forget(id); pendingRenders.delete(id); }
     for (const [name, view] of Object.entries(views)) {
       for (const id of ids) removeCard(id, name);
       view.ids = view.ids.filter(id => runs.has(id));
       if (name === 'history' && !view.ids.length) { clearHistorySelection(false); continue; }
       if (!view.ids.length) view.batchId = "";
+      if (['current', 'fingerprint', 'candy'].includes(name)) {
+        mountResultBatch(view.ids.map(id => runs.get(id)), name, $(view.results)); view.mountedIds = [...view.ids];
+      }
       refreshView(name);
     }
     renderHistory(); favoritesUI.render();
@@ -593,6 +806,7 @@ import { createResultInsights } from './result-insights.mjs';
   }
 
   function openManualHistory(name) {
+    historyFilters = {}; $('history-search').value = '';
     $('history-filter').value = name === 'current' ? 'pelican' : name;
     $('history-source').value = 'manual';
     historyPosition = null;
@@ -631,13 +845,43 @@ import { createResultInsights } from './result-insights.mjs';
     }
   }
 
+  function mountResultBatch(members, name, host) {
+    const groups = repeatedResultGroups(members);
+    host.dataset.repeated = String(Boolean(groups));
+    if (!groups) {
+      for (const [index, run] of members.entries()) {
+        renderCard(run.id, name); const root = cards.get(`${name}:${run.id}`)?.root;
+        if (root && host.children[index] !== root) host.insertBefore(root, host.children[index] || null);
+      }
+      for (const entry of repeatedLayouts.get(host)?.values() || []) entry.root.remove();
+      repeatedLayouts.delete(host); return;
+    }
+    let layout = repeatedLayouts.get(host);
+    if (!layout) { layout = new Map(); repeatedLayouts.set(host, layout); }
+    for (const [key, entry] of layout) if (!groups.some(group => group.key === key)) { entry.root.remove(); layout.delete(key); }
+    for (const [index, group] of groups.entries()) {
+      let entry = layout.get(group.key);
+      if (!entry) {
+        const root = node('section', 'repeat-model-row'), heading = node('h3', 'repeat-model-heading'), grid = node('div', 'results-grid');
+        root.setAttribute('role', 'group'); root.append(heading, grid); entry = { root, heading, grid }; layout.set(group.key, entry);
+      }
+      const run = group.runs[0], [label, provider] = resultNames(run, false);
+      text(entry.heading, `${label} · ${provider}`); entry.root.setAttribute('aria-label', `${label} · ${provider}，${group.runs.length} 份结果，按轮次排列`);
+      for (const [cardIndex, item] of group.runs.entries()) {
+        renderCard(item.id, name); const root = cards.get(`${name}:${item.id}`)?.root;
+        if (root && entry.grid.children[cardIndex] !== root) entry.grid.insertBefore(root, entry.grid.children[cardIndex] || null);
+      }
+      if (host.children[index] !== entry.root) host.insertBefore(entry.root, host.children[index] || null);
+    }
+  }
+
   function showBatch(batchId, name = "current", updateList = true) {
     const view = views[name];
     const group = name === 'history' ? historyGroups.get(batchId) : null;
     const members = group?.runs || [...runs.values()].filter(r => batchKey(r) === batchId && (name === "history" || (r.kind || "pelican") === (name === "current" ? "pelican" : name))).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     const ids = members.map(r => r.id);
     const selectionChanged = view.batchId !== batchId;
-    if (!selectionChanged && view.ids.join('|') === ids.join('|')) return;
+    if (!selectionChanged && view.mountedIds?.join('|') === ids.join('|')) return;
     const results = $(view.results);
     const daily = group?.source === 'automatic' && ['candy', 'pelican'].includes(group.kind);
     if (name === 'history' && ids.length && !historyPosition) historyPosition = { list: $('history-scroll').scrollTop, page: window.scrollY };
@@ -652,17 +896,14 @@ import { createResultInsights } from './result-insights.mjs';
         dailyPreview?.dispose?.();
         dailyPreview = daily ? renderDailyHistory(group, results, { node, text, button, modelLabel, active, timeZone: historyTimeZone, mount: mountHistoryRuns }) : null;
       }
-      if (!daily) for (const id of ids) renderCard(id, name);
+      if (!daily) mountResultBatch(members, name, results);
       if (updateList) renderHistory();
       if (selectionChanged) revealHistoryRow(batchId);
     } else {
-      for (const id of view.ids) {
-        renderCard(id, name); const root = cards.get(`${name}:${id}`)?.root;
-        if (root && !$(view.results).contains(root)) $(view.results).append(root);
-      }
+      mountResultBatch(members, name, results);
       renderRecentBatches(name);
     }
-    renderRunningBatches();
+    view.mountedIds = [...ids]; renderRunningBatches();
   }
 
   function makeCard(id, view) {
@@ -750,17 +991,18 @@ import { createResultInsights } from './result-insights.mjs';
     card.zone.dataset.verdict = candyVerdict(run);
     card.placeholder.hidden = !active(run); card.progress.hidden = run.status !== "running";
     card.answer.hidden = card.verdict.hidden = active(run); text(card.loadingLabel, states[run.status]);
-    text(card.answer, String(run.candy?.answer ?? "—"));
-    card.answer.title = String(run.candy?.answer ?? "—");
+    const answer = String(readGrade(run)?.answer ?? "—");
+    text(card.answer, answer); card.answer.title = answer;
     const diagnostic = failureInfo(run);
     text(card.verdict, diagnostic?.label || candyVerdictLabel(run)); card.verdict.title = diagnostic?.advice || candyVerdictLabel(run);
     card.verdict.dataset.tone = diagnostic?.tone || (candyVerdict(run) === "match" ? "success" : "muted");
     text(card.time, when(run.createdAt)); card.cancel.hidden = !active(run);
   }
 
-  function resultNames(run) {
+  function resultNames(run, includeRouting = true) {
     const provider = run.provider || (typeof run.model === "string" ? run.model.split("/")[0] : "未知供应商");
-    return [modelLabel({ id: run.model, name: run.modelName, provider, providerName: run.providerName }, false), run.providerName || provider];
+    const account = targetLabel(run), verification = account && includeRouting ? ({ verified: '账号已核实', mismatch: '账号不符', unavailable: '账号未核实' })[run.routing?.verification || 'unavailable'] : '';
+    return [modelLabel({ id: run.model, name: run.modelName, provider, providerName: run.providerName }, false), [run.providerName || provider, account, verification].filter(Boolean).join(' · ')];
   }
 
   function renderCardHeading(card, run) {
@@ -768,6 +1010,13 @@ import { createResultInsights } from './result-insights.mjs';
     text(card.title, name);
     card.title.title = `${run.modelName || run.model || name}${run.model ? `\n${run.model}` : ""}`;
     text(card.provider, provider); card.provider.title = provider;
+    const caption = runCaption(run);
+    if (caption && !card.context) { card.context = node('p', 'help phase-run-context'); card.provider.after(card.context); }
+    if (card.context) { card.context.hidden = !caption; text(card.context, caption); }
+    if (card.disclose) {
+      text(card.disclose, "查看详情");
+      card.disclose.title = card.disclose.detailLabel; card.disclose.setAttribute("aria-label", card.disclose.title);
+    }
   }
 
   function renderFingerprintCard(id, view) {
@@ -801,11 +1050,16 @@ import { createResultInsights } from './result-insights.mjs';
     for (const entry of entries) { const card = previewCards.get(entry.target); if (!card) continue; card.inViewport = entry.isIntersecting; renderCard(card.id, card.view); }
   }, { rootMargin: "120px" });
   const visibleCard = card => card.view === activeView && document.visibilityState !== "hidden" && card.inViewport !== false;
-  document.addEventListener?.("visibilitychange", () => { for (const card of [...cards.values()]) renderCard(card.id, card.view); });
+  document.addEventListener?.("visibilitychange", () => {
+    for (const card of [...cards.values()]) renderCard(card.id, card.view);
+    resultDetail?.progressView?.update();
+    const run = runs.get(resultDetail?.id); if (document.visibilityState !== "hidden" && run && active(run)) { run.loaded = false; loadDetail(run.id); }
+  });
   addEventListener("resize", () => { for (const card of cards.values()) fitPreview(card); });
 
   function detailButton(card, label) {
     const control = button("查看详情", () => { openResultDetail(card.id, card.disclose, card); }, "quiet detail-button");
+    control.detailLabel = label;
     control.title = label; control.setAttribute("aria-label", label);
     control.setAttribute("aria-controls", "favorite-drawer"); control.setAttribute("aria-haspopup", "dialog");
     return control;
@@ -821,6 +1075,7 @@ import { createResultInsights } from './result-insights.mjs';
     const [name, provider] = resultNames(run);
     const content = favoritesUI.openDrawer({ pelican: "动画详情", fingerprint: "指纹详情", candy: "糖果结果" }[kind], origin, "reading", () => {
       if (detail.preview) previewObserver?.unobserve(detail.preview.zone);
+      detail.progressView?.dispose();
       resultDetail = null;
     });
     resultDetail = detail;
@@ -851,6 +1106,26 @@ import { createResultInsights } from './result-insights.mjs';
     detail.parameters = node("p", "help detail-evidence"); detail.file = node("p", "path");
     detail.insights = createResultInsights(document, { onSource: openSourceRecord, timeZone: historyTimeZone });
     content.append(node("h3", "detail-name", name), metadata, detail.usage, detail.insights.root, tabs);
+    detail.progressView = createRunProgressView(document, { readState: () => {
+      const current = runs.get(id); return current ? { run: current, timings: runtimeClock.read(current), noticesEnabled: settingsUI.snapshot().progressNotice.enabled, connected: progressConnected } : null;
+    }, timers: { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: id => clearTimeout(id) } }); content.append(detail.progressView.root);
+    detail.protectionNote = node("p", "help"); detail.protectionNote.setAttribute("role", "status");
+    detail.protect = button("保护此记录", async () => {
+      if (detail.protect.disabled) return;
+      const wanted = !annotationByRun.get(id)?.protected; detail.protectSaving = true; detail.protect.disabled = true;
+      try {
+        const saved = await settingsUI.read("api/runs/annotations", { method: "POST", body: JSON.stringify({ runId: id, expectedRevision: annotationRevision, protected: wanted }) });
+        applyAnnotation(saved); text(detail.protectionNote, wanted ? "此记录会跳过自动和手动清理。" : "已解除保护，之后按保留策略和手动清理处理。");
+      } catch (err) {
+        try {
+          const current = await settingsUI.read(`api/runs/${id}`); applyAnnotation(current.annotation);
+          text(detail.protectionNote, Boolean(annotationByRun.get(id)?.protected) === wanted ? `已读取并确认：当前${wanted ? "已保护" : "未保护"}。` : `${err.message}；已读取当前状态，可核对后重试。`);
+        } catch { text(detail.protectionNote, `${err.message}；保存尚未确认，请重新读取详情后重试。`); }
+      } finally { detail.protectSaving = false; if (resultDetail === detail) renderResultDetail(); }
+    }); detail.protect.hidden = !annotationsAvailable && !annotationsError;
+    detail.protectionNote.hidden = !annotationsAvailable && !annotationsError;
+    detail.protect.className = "record-protect"; $("drawer-tools").append(detail.protect); content.append(detail.protectionNote);
+    if (notesAvailable) { detail.notes = notesUI.open(id); content.append(detail.notes.root); }
     if (failure) {
       failure.append(node("summary", "", "原始错误详情"), message);
       failure.open = fromError; failure.hidden = true;
@@ -897,6 +1172,9 @@ import { createResultInsights } from './result-insights.mjs';
   function renderResultDetail() {
     const detail = resultDetail, run = runs.get(detail?.id); if (!run) return;
     const { mode, kind, card, preview } = detail;
+    detail.progressView?.update();
+    detail.notes?.update({ runId: detail.id, annotation: annotationByRun.get(detail.id), runRevision: annotationLocalRevisions.get(detail.id) || 0 });
+    if (detail.protect) { text(detail.protect, annotationByRun.get(detail.id)?.protected ? "解除记录保护" : "保护此记录"); detail.protect.disabled = detail.protectSaving || !annotationsAvailable; detail.protect.setAttribute("aria-pressed", String(Boolean(annotationByRun.get(detail.id)?.protected))); detail.protect.title = annotationByRun.get(detail.id)?.protected ? "此记录已保护，点击解除；保护期间跳过自动和手动清理" : "保护此记录，使其跳过自动和手动清理"; if (annotationsError) text(detail.protectionNote, annotationsError); }
     detail.retest.disabled = active(run) || creating;
     detail.retest.title = active(run) ? "测试结束后可按原条件复测" : "读取本条原条件，核对后重新测试";
     for (const [key, tab] of detail.tabs) tab.setAttribute("aria-pressed", String(key === mode));
@@ -935,10 +1213,11 @@ import { createResultInsights } from './result-insights.mjs';
       if (detail.cancel) detail.cancel.hidden = !active(run);
       detail.headline.hidden = mode !== "answer" || active(run);
       detail.headline.dataset.verdict = candyVerdict(run);
-      text(detail.answer, run.candy?.answer ?? "—"); text(detail.verdict, candyVerdictLabel(run));
+      text(detail.answer, readGrade(run)?.answer ?? "—"); text(detail.verdict, candyVerdictLabel(run));
       if (mode === "reasoning") { output = run.reasoning || ""; if (run.loaded && !active(run)) placeholder = "暂无思考内容"; }
-      if (mode === "params") output = `${parameters}\n题目 ${run.candy?.version || "—"}${run.promptHash ? `\n${run.promptHash}` : ""}${run.prompt ? `\n\n${run.prompt}` : ""}`;
-      text(detail.parameters, "仅核对最终数值，推理需人工复核。");
+      if (mode === "params") output = `${parameters}\n题目 ${run.task ? `${questionName(run.task)} · ${run.task.suiteId} v${run.task.suiteVersion} / ${run.task.questionId}` : run.candy?.version || "—"}${run.promptHash ? `\n${run.promptHash}` : ""}${run.prompt ? `\n\n${run.prompt}` : ""}`;
+      const ruleLabel = run.task?.graderId === 'finite-enum' ? '按最终选项核对' : '按最终数字核对';
+      text(detail.parameters, `${runCaption(run) ? runCaption(run) + '。' : ''}${ruleLabel}，推理过程需人工复核。`);
     }
     text(detail.source, mode === "preview" ? placeholder : output || placeholder);
     detail.copyText = output; detail.copy.disabled = !output;
@@ -971,6 +1250,7 @@ import { createResultInsights } from './result-insights.mjs';
     try {
       const detail = await api(`api/runs/${id}`);
       if (runs.get(id) !== run) return;
+      applyAnnotation(detail.annotation);
       if (run.kind === "fingerprint" && Number.isFinite(run.revision) && Number.isFinite(detail.revision) && detail.revision < run.revision) { run.loading = false; run.loaded = false; renderShown(id); return; }
       if (!active(run) && active(detail)) {
         run.loading = false; renderShown(id); return;
@@ -990,7 +1270,8 @@ import { createResultInsights } from './result-insights.mjs';
           detail[count] = total;
         } else detail[count] = snapshotLength;
       }
-      Object.assign(run, detail, { loaded: true, loading: false, loadError: "" });
+      const merged = mergeRunProgress(run, detail); Object.assign(run, merged, { loaded: true, loading: false, loadError: "" }); runtimeClock.observe(run, detail.runtimeTiming);
+      if (!active(run)) delete run.runtimeTiming;
       renderShown(id);
     } catch (err) {
       if (runs.get(id) !== run) return;
@@ -1059,18 +1340,27 @@ import { createResultInsights } from './result-insights.mjs';
         if (!data.length) return;
         const value = JSON.parse(data.join("\n"));
         if (eventName === "hello") {
+          progressConnected = true;
           const liveIds = new Set(value.runs.map(run => run.id));
           removeRuns([...knownIds].filter(id => !liveIds.has(id)));
           for (const run of value.runs) updateRun(run, false); renderHistory();
+          applyAnnotationProjection(value.annotations);
+          if (settingsUI.snapshot().capabilities.memory) settingsUI.invalidate();
+          const current = runs.get(resultDetail?.id); if (current && active(current)) { current.loaded = false; loadDetail(current.id); }
           favoritesUI.refresh();
         }
         if (eventName === "run") { updateRun(value.run); if (value.run.source === "automatic" && !active(value.run)) favoritesUI.refresh(); }
         if (eventName === "removed") removeRuns(value.ids);
         if (eventName === "favorites") favoritesUI.refresh();
+        if (eventName === "annotation") applyAnnotation(value);
+        if (eventName === "settings_changed" && settingsUI.snapshot().capabilities.memory) settingsUI.invalidate();
         if (eventName === "schedule-error") notice(value.error);
+        if (eventName === 'queue-error') notice(value.error);
         if (eventName === "delta") {
           const run = runs.get(value.id);
           if (run && active(run)) {
+            if (value.progress) run.progress = mergeProgress(run.progress, value.progress);
+            if (value.runtimeTiming) runtimeClock.observe(run, value.runtimeTiming);
             for (const [field, count] of [["content", "contentChars"], ["reasoning", "reasoningChars"]]) {
               const chunk = value[field] || "", total = value[count];
               // A detail snapshot can already contain this chunk when the SSE message arrives late.
@@ -1100,7 +1390,7 @@ import { createResultInsights } from './result-insights.mjs';
         }
       }
       throw new Error("实时连接已断开，正在重连…");
-    } catch (err) { $("connection").setAttribute("aria-label", "连接中断"); $("connection").title = "连接中断"; $("connection").classList.remove("online"); connectionNotice = err.message; notice(connectionNotice); }
+    } catch (err) { progressConnected = false; resultDetail?.progressView?.update(); $("connection").setAttribute("aria-label", "连接中断"); $("connection").title = "连接中断"; $("connection").classList.remove("online"); connectionNotice = err.message; notice(connectionNotice); }
     finally { await reader?.cancel().catch(() => {}); reader?.releaseLock(); streaming = false; if (!reconnecting) setTimeout(events, 2500); }
   }
 
@@ -1114,7 +1404,24 @@ import { createResultInsights } from './result-insights.mjs';
     }
     return ids.map(id => cards.get(`favorites:${id}`)).filter(Boolean);
   }
-  const favoritesUI = createFavoritesUI({ $, node, text, button, iconButton, api, models, runs, modelLabel, active, makeUsage, renderUsage, mount: mountFavoriteRuns, openResultDetail, confirmAction, isVisible: () => activeView === "favorites", initialKind: query.get("automatic"), rememberView });
+  const favoritesUI = createFavoritesUI({ $, node, text, button, iconButton, api, models, runs, modelLabel, active, makeUsage, renderUsage, mount: mountFavoriteRuns, openResultDetail, confirmAction, isVisible: () => activeView === "favorites", initialKind: query.get("automatic"), rememberView, accountLabel: targetLabel, parseTimeoutSeconds: generationTimeoutFromSeconds,
+    onAccountTarget: async (favorite, origin) => { const model = models.get(favorite.modelId); if (!model) return notice('原模型当前不可用，请刷新目录'); return accountTargets.open(model, origin, { initial: [{ mode: 'auto' }], onApply: async accounts => {
+      const existing = await api('api/favorites'), targets = accounts.map(account => normalizeTarget({ modelId: favorite.modelId, account }));
+      if (targets.some(target => existing.favorites.some(item => item.targetKey === target.targetKey))) throw new Error('所选账号目标已在收藏中，请选择新的账号目标');
+      for (const target of targets) await api('api/favorites/save', { method: 'POST', body: JSON.stringify({ modelId: favorite.modelId, account: target.account, effort: favorite.effort, maxTokens: favorite.maxTokens, timeoutMs: favorite.timeoutMs, prompt: favorite.prompt, concurrency: favorite.concurrency, fingerprint: { ...favorite.fingerprint, account: '' } }) });
+      await favoritesUI.refresh(); notice(`已添加 ${targets.length} 个独立账号目标；请分别设置计划。`);
+    } }); } });
+  const accountTargets = createAccountTargets({ document, api, openDrawer: (...args) => favoritesUI.openDrawer(...args), closeDrawer: () => favoritesUI.closeDrawer(), footer: () => $('drawer-footer'), onChange: modelId => { renderSelected(); return [...$('selected-models').querySelectorAll('.account-target-button')].find(control => control.dataset.modelId === modelId); } });
+  const changelog = createChangelog({ $, document, openDrawer: (...args) => favoritesUI.openDrawer(...args), closeDrawer: () => favoritesUI.closeDrawer() });
+  const presetManager = createPresetManager({ document, $, settingsUI, openDrawer: (...args) => favoritesUI.openDrawer(...args), closeDrawer: () => favoritesUI.closeDrawer(), confirmAction,
+    getKind: () => settingsKind(executionView), models: () => [...models.values()], defaultPrompt: () => defaults });
+  const experimentControls = createExperimentControls({ $, kind: () => settingsKind(executionView), targetCount: () => accountTargets.targets(selected, executionView === 'fingerprint' && $('fp-pin').checked ? selectedAccounts : null).length });
+  const notesUI = createRunNotes({ document, api, read: id => ({ annotation: annotationByRun.get(id), runRevision: annotationLocalRevisions.get(id) || 0 }), apply: applyAnnotation });
+  const labTools = createLabTools({ document, $, api, settingsUI, openDrawer: (...args) => favoritesUI.openDrawer(...args), closeDrawer: () => favoritesUI.closeDrawer(), confirmAction,
+    models: () => [...models.values()], records: () => [...runs.values()], readFilters: () => historyFilters,
+    filteredIds: () => [...runs.values()].filter(run => (!$('history-source').value || ($('history-source').value === 'automatic' ? run.source === 'automatic' : $('history-source').value === 'favorites' ? run.favoriteId && run.source !== 'automatic' : !run.favoriteId && run.source !== 'automatic')) && historyMatches(run, annotationByRun.get(run.id), { ...historyFilters, text: $('history-search').value, ...($('history-filter').value ? { kind: $('history-filter').value } : {}) })).map(run => run.id),
+    setFilters: (filters, clear) => { historyFilters = filters; if (clear) $('history-search').value = ''; renderHistory(); }, onUpdated: async () => { await favoritesUI.refresh(); renderHistory(); } });
+  $('history-tools').addEventListener('click', () => labTools.openHistoryFilters());
   const tabViews = ["current", "fingerprint", "candy", "favorites", "history"];
   for (const [index, name] of tabViews.entries()) {
     const tab = $(`${name}-tab`);
@@ -1129,15 +1436,16 @@ import { createResultInsights } from './result-insights.mjs';
   setView("current");
   $("clear-selection").addEventListener("click", () => {
     if (!selected.size) return;
-    selected.clear(); selectedAccounts.clear(); error(""); renderSelected(); renderModels(); $("model-search").focus();
+    selected.clear(); selectedAccounts.clear(); accountTargets.clear(); error(""); renderSelected(); renderModels(); $("model-search").focus();
   });
   $("history-filter").addEventListener("change", renderHistory);
   $("history-source").addEventListener("change", renderHistory);
+  $('history-search').addEventListener('input', renderHistory);
   for (const name of ['current', 'fingerprint', 'candy']) $(`${name}-history-link`).addEventListener('click', () => openManualHistory(name));
   $("favorite-selected").addEventListener("click", async () => {
     const control = $("favorite-selected"); if (control.disabled || addingFavorites || !validateNumber("max-tokens", "输出上限") || !validateNumber("generation-timeout", "生成超时")) return;
     const originView = activeView; addingFavorites = true; control.disabled = true; control.setAttribute("aria-busy", "true");
-    try { await favoritesUI.addSelected([...selected], { maxTokens: Number($("max-tokens").value), timeoutMs: Number($("generation-timeout").value) * 1000, prompt: $("prompt").value }); if (activeView === originView) setView("favorites"); }
+    try { await favoritesUI.addSelected(accountTargets.supported ? accountTargets.targets(selected, executionView === 'fingerprint' && $('fp-pin').checked ? selectedAccounts : null) : [...selected], { maxTokens: Number($("max-tokens").value), timeoutMs: generationTimeoutFromSeconds($("generation-timeout").value), prompt: $("prompt").value }); if (activeView === originView) setView("favorites"); }
     catch (err) { error(err.message); } finally { addingFavorites = false; control.removeAttribute("aria-busy"); control.disabled = !selected.size || !favoritesAvailable; }
   });
   function renderBank(value) {
@@ -1179,7 +1487,7 @@ import { createResultInsights } from './result-insights.mjs';
   togglePrompt(false);
   $("edit-prompt").addEventListener("click", () => togglePrompt($("prompt-editor").hidden));
   $("prompt").addEventListener("input", promptSummary);
-  $("reset-prompt").addEventListener("click", () => { $("prompt").value = defaults; promptSummary(); });
+  $("reset-prompt").addEventListener("click", () => { $("prompt").value = defaults; promptSummary(); settingsUI.changed(); });
   $("toggle-data-dir").addEventListener("click", () => {
     const expanded = $("data-dir").hidden;
     $("data-dir").hidden = !expanded; $("toggle-data-dir").setAttribute("aria-expanded", String(expanded));
@@ -1266,6 +1574,9 @@ import { createResultInsights } from './result-insights.mjs';
   $("cleanup-calendar").addEventListener("keydown", event => { if (event.key === "Escape") { event.preventDefault(); closeCalendar(true); } });
   $("cleanup-before").addEventListener("input", () => $("cleanup-before").removeAttribute("aria-invalid"));
   for (const id of ["max-tokens", "generation-timeout", "concurrency"]) $(id).addEventListener("input", () => $(id).removeAttribute("aria-invalid"));
+  for (const id of ["max-tokens", "generation-timeout", "concurrency", "prompt"]) $(id).addEventListener("input", () => settingsUI.changed());
+  for (const id of ["fp-api", "fp-tier", "fp-strict"]) $(id).addEventListener("change", () => settingsUI.changed());
+  addEventListener("pagehide", () => { settingsUI.flush(); settingsUI.dispose(); });
   addEventListener("pointerdown", event => { if (!$("cleanup-calendar").hidden && !$("cleanup-calendar").contains(event.target) && !$("choose-date").contains(event.target)) closeCalendar(); });
   addEventListener("focusin", event => { if (!$("cleanup-calendar").hidden && !$("cleanup-calendar").contains(event.target) && !$("choose-date").contains(event.target)) closeCalendar(); });
   addEventListener("scroll", event => { if (!$("cleanup-calendar").contains(event.target)) closeCalendar(); }, true);
@@ -1277,13 +1588,13 @@ import { createResultInsights } from './result-insights.mjs';
     if (!open) { closeCalendar(); $("manage-history").focus(); }
   });
   function cleanupControls() {
-    const busy = cleaning || deleting.size > 0;
+    const busy = cleanupPaused || cleaning || deleting.size > 0;
     $("clear-all").disabled = $("clear-before").disabled = busy;
     $("cleanup-before").disabled = $("choose-date").disabled = cleaning;
     $("cleanup-panel").setAttribute("aria-busy", String(cleaning));
   }
   async function cleanup(mode) {
-    if (cleaning || deleting.size) return;
+    if (cleanupPaused || cleaning || deleting.size) return;
     let before;
     if (mode === "before") {
       const parsed = parseLocal($("cleanup-before").value);
@@ -1296,7 +1607,7 @@ import { createResultInsights } from './result-insights.mjs';
     try {
       const outcome = await api("api/runs/cleanup", { method: "POST", body: JSON.stringify({ mode, ...(before ? { before } : {}) }) });
       removeRuns(outcome.removed);
-      $("cleanup-status").textContent = `已清除 ${outcome.removed.length} 条记录及文件${outcome.skippedActive ? `，保留 ${outcome.skippedActive} 个未完成任务` : ""}${outcome.errors.length ? `；${outcome.errors.length} 条清理失败：${outcome.errors[0].error}` : ""}`;
+      $("cleanup-status").textContent = `已清除 ${outcome.removed.length} 条记录及文件${outcome.skippedActive ? `，保留 ${outcome.skippedActive} 个未完成任务` : ""}${outcome.skippedProtected ? `，保留 ${outcome.skippedProtected} 条受保护记录` : ""}${outcome.errors.length ? `；${outcome.errors.length} 条清理失败：${outcome.errors[0].error}` : ""}${outcome.annotationErrors?.length ? "；孤立注释回收失败" : ""}`;
       $("cleanup-status").dataset.error = String(outcome.errors.length > 0);
     } catch (err) { $("cleanup-status").textContent = err.message; $("cleanup-status").dataset.error = "true"; }
     finally { cleaning = false; cleanupControls(); renderHistory(); }
@@ -1310,12 +1621,10 @@ import { createResultInsights } from './result-insights.mjs';
   });
   function validateNumber(id, label) {
     const control = $(id), value = Number(control.value);
-    if (!control.value.trim() || !Number.isSafeInteger(value) || value < 0) {
-      $("advanced-settings").open = true; control.setAttribute("aria-invalid", "true"); error(`${label}需为非负整数，0 表示不设上限`); control.focus(); return false;
-    }
-    if (id === "generation-timeout" && value > 2147483) {
-      $("advanced-settings").open = true; control.setAttribute("aria-invalid", "true"); error("生成超时最多 2147483 秒，0 表示不设超时"); control.focus(); return false;
-    }
+    try {
+      if (id === 'generation-timeout') generationTimeoutFromSeconds(control.value);
+      else if (!control.value.trim() || !Number.isSafeInteger(value) || value < 0) throw new Error(`${label}需为非负整数，0 表示不设上限`);
+    } catch (err) { $("advanced-settings").open = true; control.setAttribute("aria-invalid", "true"); error(err.message); control.focus(); return false; }
     control.removeAttribute("aria-invalid"); return true;
   }
   // Magpie's sandbox blocks native submission before a form's submit event can run.
@@ -1328,12 +1637,18 @@ import { createResultInsights } from './result-insights.mjs';
     for (const [id, label] of [["max-tokens", "输出上限"], ["generation-timeout", "生成超时"], ["concurrency", "每批并行数"]]) {
       if (!validateNumber(id, label)) return;
     }
-    const mode = executionView; creating = true; updateSettings();
+    const mode = executionView; let parameters;
+    try { parameters = settingsUI.capture(settingsKind(mode)); }
+    catch (err) { error(err.message); return; }
+    const unsupported = [...selected].find(([id, effort]) => effort && !models.get(id)?.efforts.includes(effort));
+    if (unsupported) { error(`${models.get(unsupported[0])?.name || unsupported[0]} 不支持保存的思考档位，请选择当前支持的档位`); return; }
+    settingsUI.flush(); creating = true; updateSettings();
     try {
+      const { effortByModel, ...captured } = parameters, experiment = experimentControls.capture();
+      const targets = accountTargets.targets(selected, mode === 'fingerprint' && $('fp-pin').checked ? selectedAccounts : null);
       const body = await api("api/runs", { method: "POST", body: JSON.stringify({
-        ...(mode === "fingerprint" ? { kind: "fingerprint", strict: $("fp-strict").checked, api: $("fp-api").value || "auto", serviceTier: $("fp-tier").value || "default" } : mode === "candy" ? { kind: "candy" } : { prompt: $("prompt").value }),
-        maxTokens: Number($("max-tokens").value), timeoutMs: Number($("generation-timeout").value) * 1000, concurrency: Number($("concurrency").value), models: [...selected].map(([id, effort]) => ({ id, effort,
-          ...(mode === "fingerprint" && $("fp-pin").checked && selectedAccounts.get(id) ? { account: selectedAccounts.get(id) } : {}) })),
+        ...captured, ...experiment, ...(mode !== "current" ? { kind: mode } : {}), ...(accountTargets.supported ? { targets } : { models: [...selected].map(([id, effort]) => ({ id, effort,
+          ...(mode === "fingerprint" && $("fp-pin").checked && selectedAccounts.get(id) ? { account: selectedAccounts.get(id) } : {}) })) }),
       }) });
       for (const run of body.runs) updateRun(run, false); renderHistory();
       showBatch(batchKey(body.runs[0]), mode); notice("");
@@ -1380,15 +1695,20 @@ import { createResultInsights } from './result-insights.mjs';
     $("connection").setAttribute("aria-label", "正在连接"); $("connection").title = "正在连接";
     try {
     const boot = await api("api/bootstrap"); initialized = true;
-    defaults = boot.defaultPrompt; $("prompt").value = defaults; $("data-dir").textContent = boot.dataDir; $("version").textContent = boot.version;
+    notesAvailable = boot.notesAvailable === true; $('history-search-row').hidden = !notesAvailable; $('history-tools').hidden = !notesAvailable; accountTargets.load(boot.accountsAvailable); labTools.load(boot); $('fp-pin-row').hidden = accountTargets.supported;
+    cleanupPaused = boot.cleanupPaused === true; annotationsAvailable = boot.annotationsAvailable === true; annotationsError = boot.annotationsError || ""; applyAnnotationProjection(boot.annotations);
+    defaults = boot.defaultPrompt; if (!boot.settingsCapabilities?.memory) $("prompt").value = defaults;
+    settingsUI.load(boot.settings, boot.settingsCapabilities, boot.settingsError || ""); $("data-dir").textContent = boot.dataDir; $("version").textContent = boot.version; changelog.setVersion(boot.version);
     promptSummary();
-    $("retention-note").textContent = `保留 ${boot.retentionDays || 7} 天`;
+    retentionNote(boot.retentionDays);
+    if (cleanupPaused) historyNotice(boot.settingsError || boot.annotationsError || "本地配置恢复失败，清理已暂停", true);
     const now = new Date(); $("cleanup-before").value = `${localDate(now)} ${localTime(now)}`;
     $("cleanup-panel").hidden = true;
     text($("manage-history"), "批量清理"); closeCalendar(); cleanupControls();
     batchCleanup = boot.batchCleanup === true;
     favoritesAvailable = boot.favoritesAvailable === true; candyAvailable = boot.candyAvailable === true;
     text($("candy-prompt"), boot.candyPrompt || "重新开启插件后加载题面"); text($("candy-version"), `可选形状版 · ${boot.candyVersion || "v1"}`);
+    experimentControls.load(boot);
     fingerprintAvailable = boot.fingerprintAvailable === true; batchCancel = boot.batchCancel === true; batchExport = boot.batchExport === true; retestAvailable = boot.retestAvailable === true;
     renderBank(boot.bankStatus); updateSettings();
     openDataDir = boot.openDataDir === true; $("open-data-dir").disabled = !openDataDir;
@@ -1396,7 +1716,7 @@ import { createResultInsights } from './result-insights.mjs';
     $("toggle-data-dir").title = boot.dataDir; $("data-dir").hidden = true;
     if (!batchCleanup) historyNotice("单批删除需要重新开启插件；当前仍可查看历史和使用批量清理。");
     historyTimeZone = boot.historyTimeZone;
-    updateModels(boot.models); for (const run of boot.runs) runs.set(run.id, run); renderHistory(); favoritesUI.init(boot);
+    updateModels(boot.models); for (const run of boot.runs) { runs.set(run.id, run); runtimeClock.observe(run); } renderHistory(); favoritesUI.init(boot);
     const startupErrors = [boot.error, boot.favoritesError ? `${boot.favoritesError}。自动测试已停用，原配置已保留；历史和手动测试仍可使用。恢复配置后请重新开启插件。` : ""].filter(Boolean);
     if (startupErrors.length) notice(startupErrors.join("；"));
     for (const [name, kind, param] of [["current", "pelican", "run"], ["fingerprint", "fingerprint", "fingerprint"], ["candy", "candy", "candy"]]) {
