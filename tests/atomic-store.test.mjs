@@ -7,6 +7,13 @@ import { RunStore } from '../lib/store.mjs';
 import { StateFile } from '../lib/state-file.mjs';
 import { temporary } from './helpers.mjs';
 
+test('malformed private state does not echo file contents in recovery feedback', async t => {
+  const root = await temporary(t), file = new StateFile(root, '.settings', {}, () => {});
+  await file.init(); await fs.writeFile(file.path, 'private-note-fragment'); await file.init();
+  assert.match(file.recoveryError, /UTF-8 JSON/); assert.ok(!file.recoveryError.includes('private-note'));
+  assert.equal(await fs.readFile(file.path, 'utf8'), 'private-note-fragment'); await file.close();
+});
+
 // RYP: inject only the OS rename failure; retain the real writes, reads and cleanup.
 function rejectReplacement(t, path, failures, code) {
   const original = fs.rename;

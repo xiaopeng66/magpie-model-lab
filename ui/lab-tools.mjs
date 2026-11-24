@@ -1,4 +1,5 @@
 import { generationTimeoutFromSeconds } from '../lib/test-parameters.mjs';
+import { accountLabel } from '../lib/targets.mjs';
 
 export function createLabTools({ document, $, api, settingsUI, openDrawer, closeDrawer, confirmAction, models, records, filteredIds, readFilters, setFilters, onUpdated }) {
   let capabilities = {}, generation = 0;
@@ -65,7 +66,7 @@ export function createLabTools({ document, $, api, settingsUI, openDrawer, close
     const accountNames = new Map();
     const identity = (group, key) => {
       if (group === 'providers') return `供应商 · ${providerName(key)}`;
-      const [provider, account] = JSON.parse(key); return `固定账号 · ${providerName(provider)} · ${accountNames.get(key) || account}`;
+      const [provider, account] = JSON.parse(key); return `固定账号 · ${providerName(provider)} · ${accountNames.get(key) || accountLabel({ mode: 'pinned', id: account })}`;
     };
     function lock(value) {
       busy = value;
@@ -136,15 +137,15 @@ export function createLabTools({ document, $, api, settingsUI, openDrawer, close
       actions.append(save, cancel); form.append(actions);
       current.updateControls = () => { save.disabled = busy || loading || Boolean(account && (!loaded || !account.value)); if (account) account.disabled = busy || !loaded; };
       const load = async () => {
-        if (!account) return; const revision = ++loadRevision; loading = true; loaded = false; account.replaceChildren(); const empty = node('option', '请选择账号'); empty.value = ''; account.append(empty); account.value = ''; account.title = ''; accountHint.textContent = '正在读取供应商缓存账号…'; current.updateControls();
+        if (!account) return; const revision = ++loadRevision; loading = true; loaded = false; account.replaceChildren(); const empty = node('option', '请选择账号'); empty.value = ''; account.append(empty); account.value = ''; account.title = ''; accountHint.textContent = '正在读取供应商账号…'; current.updateControls();
         try {
           const result = await api('api/accounts?provider=' + encodeURIComponent(provider.value)); if (editor !== current || revision !== loadRevision || !form.isConnected) return;
           if (result.capabilities?.pinned === false) { accountHint.textContent = result.capabilities.reason || '宿主未确认固定账号路由能力'; return; }
           for (const item of result.accounts || []) {
             if (item.enabled === false || item.available === false) continue;
-            const option = node('option', item.name || item.id); option.value = item.id; option.title = `${item.name || item.id} · ${item.id}`; account.append(option); accountNames.set(JSON.stringify([provider.value, item.id]), item.name || item.id);
+            const label = accountLabel({ mode: 'pinned', id: item.id, name: item.name }), option = node('option', label); option.value = item.id; option.title = item.kind === 'key' ? label : `${item.name || item.id} · ${item.id}`; account.append(option); accountNames.set(JSON.stringify([provider.value, item.id]), label);
           }
-          loaded = true; accountHint.textContent = account.children.length > 1 ? '仅对明确选择此账号的请求生效；自动分配不受账号规则限制。' : '当前供应商没有可选择的缓存账号。';
+          loaded = true; accountHint.textContent = [result.warning, account.children.length > 1 ? '仅对明确选择此账号的请求生效；自动分配不受账号规则限制。' : '当前供应商没有可选择的账号。'].filter(Boolean).join(' ');
         } catch (error) { if (editor === current && revision === loadRevision && form.isConnected) accountHint.textContent = error.message; }
         finally { if (editor === current && revision === loadRevision && form.isConnected) { loading = false; current.updateControls(); } }
       };
@@ -169,14 +170,14 @@ export function createLabTools({ document, $, api, settingsUI, openDrawer, close
         summary.append(node('p', value.queued?.length || value.cooldowns?.length ? `${value.queued?.length || 0} 个请求排队${value.cooldowns?.length ? ` · ${value.cooldowns.length} 个目标等待限流恢复` : ''}` : '当前没有排队请求或限流等待。', 'help'));
         for (const item of (value.queued || []).slice(0, 100)) {
           const run = records().find(run => run.id === item.runId), account = run?.accountTarget;
-          const target = [run?.modelName || run?.model || item.runId, account?.mode === 'pinned' ? account.name || account.id : account?.mode === 'auto' ? '自动分配' : ''].filter(Boolean).join(' · ');
+          const target = [run?.modelName || run?.model || item.runId, accountLabel(account) || (account?.mode === 'auto' ? '自动分配' : '')].filter(Boolean).join(' · ');
           summary.append(node('p', `${target} · ${labels[item.reason] || item.reason}${item.until ? ' · ' + new Date(item.until).toLocaleString('zh-CN') : ''}`, 'help'));
         }
         if (value.queued?.length > 100) summary.append(node('p', '显示前 100 个等待请求。', 'help'));
         for (const cooling of value.cooldowns || []) {
           let label = cooling.scope;
           if (label.startsWith('provider:')) label = `供应商 · ${providerName(label.slice(9))}`;
-          else if (label.startsWith('account:')) { try { const [provider, account] = JSON.parse(label.slice(8)); label = `固定账号 · ${providerName(provider)} · ${account}`; } catch {} }
+          else if (label.startsWith('account:')) { try { const [provider, account] = JSON.parse(label.slice(8)); label = `固定账号 · ${providerName(provider)} · ${accountLabel(records().find(run => run.provider === provider && run.accountTarget?.id === account)?.accountTarget) || accountLabel({ mode: 'pinned', id: account })}`; } catch {} }
           summary.append(node('p', `${label} · 等待至 ${new Date(cooling.until).toLocaleString('zh-CN')}`, 'help'));
         }
         if (value.cooldowns?.length) summary.append(node('p', '收到 HTTP 429 后自动等待恢复，不自动重试已失败的请求。', 'help'));
@@ -204,7 +205,7 @@ export function createLabTools({ document, $, api, settingsUI, openDrawer, close
       }
       return row;
     };
-    const accountName = (provider, id) => records().find(run => run.provider === provider && run.accountTarget?.id === id)?.accountTarget?.name || id;
+    const accountName = (provider, id) => accountLabel(records().find(run => run.provider === provider && run.accountTarget?.id === id)?.accountTarget) || accountLabel({ mode: 'pinned', id });
     async function refresh() {
       if (refreshButton.disabled || !body.isConnected) return; refreshButton.disabled = true;
       try {
@@ -285,15 +286,16 @@ export function createLabTools({ document, $, api, settingsUI, openDrawer, close
         documentValue = value; choices = { settings: {}, targets: {}, plans: {} }; bindings = {};
         const settings = section(choicesHost, '本地设置选择'), settingsGrid = columns(settings);
         for (const key of Object.keys(value.payload.settings || {}).filter(key => key !== 'budget')) { const labels = { manual: '手动参数', presets: '常用参数方案', retention: '历史保留', progressNotice: '运行提醒', queue: '请求控制' }, input = select(settingsGrid, labels[key] || key, [['keep', '保留本地'], ['overwrite', '使用导入值'], ...(key === 'presets' ? [['merge', '按名称合并方案']] : [])], 'keep'); input.addEventListener('change', () => { choices.settings[key] = input.value; invalidate(); }); }
-        let accountCache; const accounts = () => accountCache ||= api('api/accounts');
+        const accountCache = new Map(), accounts = modelId => { if (!accountCache.has(modelId)) accountCache.set(modelId, api('api/accounts?provider=' + encodeURIComponent(modelId.split('/')[0]) + '&model=' + encodeURIComponent(modelId))); return accountCache.get(modelId); };
         for (const item of value.payload.favorites) {
           const target = section(choicesHost, `${item.modelId} · ${item.sourceRef}`), action = select(target, '目标冲突选择', [['keep', '保留本地；新目标则新增'], ['overwrite', '覆盖同目标参数'], ['skip', '跳过此目标']], 'keep'); action.addEventListener('change', () => { choices.targets[item.sourceRef] = action.value; invalidate(); });
           for (const [key, accountValue] of [['account', item.account], ['fingerprintAccount', item.fingerprintAccount]]) if (accountValue?.mode === 'rebind') {
             const input = select(target, key === 'account' ? '导入目标账号绑定' : '旧指纹账号绑定', [['', '请选择绑定'], ['auto', '自动分配']], '');
+            const accountHint = status(target); accountHint.hidden = true;
             input.addEventListener('change', () => { bindings[item.sourceRef] ||= {}; if (!input.value) delete bindings[item.sourceRef][key]; else bindings[item.sourceRef][key] = input.value === 'auto' ? { mode: 'auto' } : { mode: 'pinned', id: input.value }; invalidate(); });
-            try { const cached = await accounts(); if (!panel.alive() || revision !== readRevision) return; for (const account of cached.accounts || []) if (account.provider === item.modelId.split('/')[0] && account.enabled !== false && account.available !== false) { const option = node('option', `${account.name || account.id} · ${account.id}`); option.value = account.id; input.append(option); } } catch (error) { if (!panel.alive() || revision !== readRevision) return; feedback.textContent = error.message; }
+            try { const cached = await accounts(item.modelId); if (!panel.alive() || revision !== readRevision) return; accountHint.textContent = cached.warning || (cached.capabilities?.pinned === false ? cached.capabilities.reason || '宿主未确认固定账号路由能力' : ''); accountHint.hidden = !accountHint.textContent; for (const account of cached.accounts || []) if (cached.capabilities?.pinned !== false && account.provider === item.modelId.split('/')[0] && account.enabled !== false && account.available !== false) { const label = accountLabel({ mode: 'pinned', id: account.id, name: account.name }), option = node('option', account.kind === 'key' ? label : `${account.name || account.id} · ${account.id}`); option.value = account.id; input.append(option); } } catch (error) { if (!panel.alive() || revision !== readRevision) return; accountHint.textContent = error.message; accountHint.hidden = false; }
           }
-          else if (accountValue?.mode === 'pinned') target.append(node('p', `原固定账号：${accountValue.name || accountValue.id}`, 'help'));
+          else if (accountValue?.mode === 'pinned') target.append(node('p', `原固定账号：${accountLabel(accountValue)}`, 'help'));
         }
         const plans = section(choicesHost, '计划冲突选择'); for (const item of value.payload.plans) { const input = select(plans, `${item.favoriteRef} · ${item.kind} · ${item.sourceRef}`, [['keep', '保留本地；新计划则暂停新增'], ['overwrite', '使用导入计划并暂停'], ['skip', '跳过计划']], 'keep'); input.addEventListener('change', () => { choices.plans[item.sourceRef] = input.value; invalidate(); }); }
         if (!panel.alive() || revision !== readRevision) return; previewButton.disabled = false; feedback.textContent = '配置已读取，请选择绑定与冲突处理，再预览完整候选。';

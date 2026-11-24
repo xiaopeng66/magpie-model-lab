@@ -1,6 +1,6 @@
 {
   "name": "magpie-pelican-bench",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "AI model evaluation for Magpie: compare the original candy reasoning puzzle, HTML animations and model fingerprints with scheduled tests. 模型实验室：原糖果推理题、鹈鹕动画、模型指纹和定时自动测试。",
   "type": "module",
   "main": "index.mjs",

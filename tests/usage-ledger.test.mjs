@@ -30,6 +30,15 @@ test('usage records every request even when legacy global, supplier and account 
   assert.equal(usage.summary().knownRequests, 3); assert.equal(usage.summary().tokens, 90);
 });
 
+test('restart settles interrupted entries once and leaves completed timestamps untouched', async t => {
+  let at = Date.parse('2026-11-24T10:00:00Z'); const { dir, usage } = await ledger(t, () => at);
+  const done = await issue(usage), pending = request(); await usage.reserve(pending); await usage.start(pending.physicalRequestId); await usage.close();
+  const path = join(dir, '.budgets/state.json'), before = JSON.parse(await readFile(path));
+  const reopen = async () => { at += 60000; const reopened = new UsageLedger(dir, { now: () => at, timeZone: 'UTC' }); await reopened.init(); await reopened.close(); return JSON.parse(await readFile(path)); };
+  const once = await reopen(); assert.equal(once.entries[done.physicalRequestId].settledAt, before.entries[done.physicalRequestId].settledAt);
+  assert.equal(once.entries[pending.physicalRequestId].possibleUnsent, true); assert.deepEqual(await reopen(), once);
+});
+
 test('an unstarted request may cross midnight and is counted on the actual fetch date', async t => {
   let at = Date.parse('2026-11-23T23:59:59Z'); const { usage } = await ledger(t, () => at), input = request();
   await usage.reserve(input); at += 2000; await usage.start(input.physicalRequestId); await usage.markStarted(input.physicalRequestId);

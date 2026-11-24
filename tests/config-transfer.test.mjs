@@ -10,6 +10,12 @@ import { waitFor } from './helpers.mjs';
 const transfer = await import('../lib/config-transfer.mjs').catch(() => ({}));
 async function setup(t) { const environment = await enhancementSetup(t);assert.equal(typeof transfer.ConfigTransfer,'function','Missing safe configuration transfer');const config=new transfer.ConfigTransfer({...environment});return {...environment,config}; }
 
+test('configuration preview returns a validation error for a target without an account', async t => {
+  const { favorites, config } = await setup(t); await favorites.save({ modelId: 'fixture/one' });
+  const document = config.export(); delete document.payload.favorites[0].account; document.digest = transfer.configDigest(document.payload);
+  await assert.rejects(config.preview({ document }), error => error.status === 400);
+});
+
 test('configuration export is a whitelist and share sourceRefs preserve distinct accounts and plan links', async t => {
   const { favorites,config }=await setup(t);
   const a=await favorites.save({modelId:'fixture/one',account:{mode:'pinned',id:'a'}}),b=await favorites.save({modelId:'fixture/one',account:{mode:'pinned',id:'b'}});
@@ -52,6 +58,23 @@ test('stale local revisions and queued requests make configuration apply return 
   await runner.submit({kind:'candy',targets:[{modelId:'fixture/one'}]});
   await assert.rejects(config.apply({token:next.token,confirm:true}),error=>error.status===409);
   runner.schedulingPaused--;await runner.cancel(runner.list()[0].id);
+});
+
+test('import refuses a disk edit made after preview and preserves both original files', async t => {
+  const { config, dir } = await setup(t), preview = await config.preview({ document: config.export() });
+  const settingsPath = join(dir, '.settings/state.json'), favoritesPath = join(dir, '.favorites/state.json');
+  const original = await readFile(favoritesPath), external = JSON.parse(await readFile(settingsPath)); external.revision++;
+  const bytes = JSON.stringify(external); await writeFile(settingsPath, bytes);
+  await assert.rejects(config.apply({ token: preview.token, confirm: true }), error => error.status === 409);
+  assert.equal(await readFile(settingsPath, 'utf8'), bytes); assert.deepEqual(await readFile(favoritesPath), original);
+});
+
+test('paused configuration storage blocks export, preview and previously approved candidates', async t => {
+  const { settings, config } = await setup(t), document = config.export(), preview = await config.preview({ document });
+  settings.file.pause('test recovery');
+  assert.throws(() => config.export(), error => error.status === 503);
+  await assert.rejects(config.preview({ document }), error => error.status === 503);
+  await assert.rejects(config.apply({ token: preview.token, confirm: true }), error => error.status === 503);
 });
 
 test('configuration maintenance drains an already accepted favorite dispatch before the idle check', async t => {

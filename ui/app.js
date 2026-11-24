@@ -335,7 +335,7 @@ import { createChangelog } from './changelog.mjs';
       const label = node("label", "model-option");
       const input = document.createElement("input"); input.type = "checkbox"; input.value = model.id; input.checked = selected.has(model.id);
       input.addEventListener("change", () => {
-        if (input.checked) selected.set(model.id, settingsUI.snapshot().capabilities.memory ? rememberedEfforts[settingsKind(executionView)]?.[model.id] || "" : ""); else { selected.delete(model.id); selectedAccounts.delete(model.id); }
+        if (input.checked) selected.set(model.id, settingsUI.snapshot().capabilities.memory ? rememberedEfforts[settingsKind(executionView)]?.[model.id] || "" : ""); else { selected.delete(model.id); selectedAccounts.delete(model.id); accountTargets.remove(model.id); }
         error(""); renderSelected();
       });
       input.setAttribute("aria-label", `${modelLabel(model, true)} (${model.id})`); label.title = model.id;
@@ -1051,6 +1051,7 @@ import { createChangelog } from './changelog.mjs';
   }, { rootMargin: "120px" });
   const visibleCard = card => card.view === activeView && document.visibilityState !== "hidden" && card.inViewport !== false;
   document.addEventListener?.("visibilitychange", () => {
+    refreshCatalogIfDue();
     for (const card of [...cards.values()]) renderCard(card.id, card.view);
     resultDetail?.progressView?.update();
     const run = runs.get(resultDetail?.id); if (document.visibilityState !== "hidden" && run && active(run)) { run.loaded = false; loadDetail(run.id); }
@@ -1614,11 +1615,22 @@ import { createChangelog } from './changelog.mjs';
   }
   $("clear-all").addEventListener("click", () => cleanup("all"));
   $("clear-before").addEventListener("click", () => cleanup("before"));
-  $("refresh-models").addEventListener("click", async () => {
+  const catalogInterval = 5 * 60 * 1000;
+  let nextCatalogRefresh = Infinity;
+  function refreshCatalogIfDue() {
+    if (initialized && !bootstrapping && !reconnecting && document.visibilityState !== 'hidden' && Date.now() >= nextCatalogRefresh) return refreshCatalog(false);
+  }
+  async function refreshCatalog(manual) {
     const control = $("refresh-models"); if (control.disabled) return; control.disabled = true;
-    try { updateModels((await api("api/models")).models); notice(""); } catch (err) { notice(err.message); }
-    finally { control.disabled = false; }
-  });
+    try {
+      const { models: list } = await api('api/models');
+      if (!Array.isArray(list)) throw new Error('模型目录格式无效');
+      if (JSON.stringify(list) !== JSON.stringify([...models.values()])) updateModels(list);
+      if (manual) notice('');
+    } catch (err) { if (manual) notice(err.message); }
+    finally { nextCatalogRefresh = Date.now() + catalogInterval; control.disabled = false; }
+  }
+  $("refresh-models").addEventListener("click", () => refreshCatalog(true));
   function validateNumber(id, label) {
     const control = $(id), value = Number(control.value);
     try {
@@ -1686,6 +1698,7 @@ import { createChangelog } from './changelog.mjs';
     }
   });
   setInterval(() => {
+    refreshCatalogIfDue();
     const run = runs.get(resultDetail?.id);
     if (run && active(run) && run.startedAt) { renderStats(resultDetail, run); text(resultDetail.elapsed, `耗时 ${resultDetail.metrics[0].textContent}`); }
   }, 1000);
@@ -1716,7 +1729,7 @@ import { createChangelog } from './changelog.mjs';
     $("toggle-data-dir").title = boot.dataDir; $("data-dir").hidden = true;
     if (!batchCleanup) historyNotice("单批删除需要重新开启插件；当前仍可查看历史和使用批量清理。");
     historyTimeZone = boot.historyTimeZone;
-    updateModels(boot.models); for (const run of boot.runs) { runs.set(run.id, run); runtimeClock.observe(run); } renderHistory(); favoritesUI.init(boot);
+    updateModels(boot.models); nextCatalogRefresh = Date.now() + catalogInterval; for (const run of boot.runs) { runs.set(run.id, run); runtimeClock.observe(run); } renderHistory(); favoritesUI.init(boot);
     const startupErrors = [boot.error, boot.favoritesError ? `${boot.favoritesError}。自动测试已停用，原配置已保留；历史和手动测试仍可使用。恢复配置后请重新开启插件。` : ""].filter(Boolean);
     if (startupErrors.length) notice(startupErrors.join("；"));
     for (const [name, kind, param] of [["current", "pelican", "run"], ["fingerprint", "fingerprint", "fingerprint"], ["candy", "candy", "candy"]]) {

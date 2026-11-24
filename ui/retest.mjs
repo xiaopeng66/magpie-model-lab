@@ -1,4 +1,5 @@
 import { failureInfo } from "../lib/diagnostics.mjs";
+import { accountLabel } from '../lib/targets.mjs';
 
 export async function openRetestDrawer({ document, openDrawer, closeDrawer, api, runIds, origin, names, kindLabel, onCreated, onSubmitting, onError }) {
   const node = (tag, className = "", value) => { const element = document.createElement(tag); element.className = className; if (value !== undefined) element.textContent = value; return element; };
@@ -75,7 +76,7 @@ export async function openRetestDrawer({ document, openDrawer, closeDrawer, api,
         const cap = conditions.maxTokens === 0 ? "不设输出上限" : `输出上限 ${conditions.maxTokens.toLocaleString()} Token`;
         const timeout = conditions.timeoutMs === 0 ? "不设超时" : `超时 ${(conditions.timeoutMs ?? 600000) / 1000} 秒`;
         root.append(node("p", "retest-condition-line help", `思考 ${conditions.effort || "默认"} · ${cap} · ${timeout} · ${conditions.concurrency === 0 ? "不设并行上限" : `并行 ${conditions.concurrency}`}`));
-        const evidence = item.kind === "fingerprint" ? `${conditions.api} · ${conditions.strict ? "严格采样" : "普通采样"} · ${conditions.serviceTier}\n账号 ${conditions.account || "自动分配"}\n参考库 ${conditions.bank?.builtAt || "—"}\n${conditions.bank?.sha256 || ""}\n\n${(conditions.challenges || []).map((challenge, index) => `采样 ${index + 1} · ${challenge.expected_count} 个数字\n${challenge.prompt}`).join("\n\n")}` : conditions.prompt;
+        const evidence = item.kind === "fingerprint" ? `${conditions.api} · ${conditions.strict ? "严格采样" : "普通采样"} · ${conditions.serviceTier}\n账号 ${accountLabel(conditions.accountTarget) || conditions.account || "自动分配"}\n参考库 ${conditions.bank?.builtAt || "—"}\n${conditions.bank?.sha256 || ""}\n\n${(conditions.challenges || []).map((challenge, index) => `采样 ${index + 1} · ${challenge.expected_count} 个数字\n${challenge.prompt}`).join("\n\n")}` : conditions.prompt;
         const original = node("pre", "source-view", evidence); original.setAttribute("tabindex", "0"); details.append(summary, original); root.append(details);
       }
       if (item.reason) root.append(node("p", "inline-error", item.reason));

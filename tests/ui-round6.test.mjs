@@ -74,7 +74,7 @@ test('account loading and submission lock all selection controls', async t => {
   const env = await accountPicker(t, () => response.promise, [{ mode: 'auto' }], {
     onLoading: env => {
       assert.equal(env.all().disabled, true); assert.equal(env.apply.disabled, true);
-      assert.equal(env.ui.descendants(env.body, 'button').find(button => button.textContent === '刷新缓存账号').disabled, true);
+      assert.equal(env.ui.descendants(env.body, 'button').find(button => button.textContent === '刷新账号').disabled, true);
       response.resolve({ capabilities: { pinned: true }, accounts: [{ id: 'a' }] });
     }, onApply: () => save.promise,
   });
@@ -91,11 +91,13 @@ test('account refresh removes an unavailable selection and safely recovers after
     if (reads === 3) throw Error('缓存暂不可读');
     return { capabilities: { pinned: true }, accounts: [{ id: 'a', enabled: reads === 1 }, { id: 'b', enabled: true }] };
   }, [{ mode: 'pinned', id: 'a' }]);
-  const refresh = env.ui.descendants(env.body, 'button').find(button => button.textContent === '刷新缓存账号');
+  const refresh = env.ui.descendants(env.body, 'button').find(button => button.textContent === '刷新账号');
   await refresh.fire('click'); assert.equal(env.apply.disabled, true); assert.equal(refresh.disabled, false);
   assert.equal(env.inputs().find(input => input.dataset.accountId === 'a').checked, false);
-  await refresh.fire('click'); assert.equal(env.all().disabled, true); assert.equal(env.apply.disabled, false);
-  assert.equal(env.inputs().find(input => input.getAttribute('aria-label') === '自动分配').checked, true);
+  await refresh.fire('click'); assert.equal(env.all().disabled, true); assert.equal(env.apply.disabled, true);
+  await refresh.fire('click'); assert.equal(env.apply.disabled, true);
+  const auto = env.inputs().find(input => input.getAttribute('aria-label') === '自动分配'); assert.equal(auto.checked, false);
+  auto.checked = true; await auto.fire('change');
   await env.apply.fire('click'); assert.deepEqual(env.applied(), [{ mode: 'auto' }]);
 });
 

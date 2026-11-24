@@ -24,6 +24,22 @@ test('target identity separates accounts and ignores display aliases; old overri
   assert.equal(targets.accountHeader('北冥'), '%E5%8C%97%E5%86%A5');
 });
 
+test('ordinary Key display labels distinguish identical names without expanding the persistent digest', () => {
+  const ids = ['synthetic-primary-key', 'synthetic-spare-key'].map(key => 'key:' + createHash('sha256').update(key).digest('hex'));
+  assert.equal(typeof targets.accountLabel, 'function');
+  const labels = ids.map(id => targets.accountLabel({ mode: 'pinned', id, name: '同名分组' }));
+  assert.notEqual(labels[0], labels[1]);
+  for (let index = 0; index < ids.length; index++) {
+    assert.equal(labels[index], '同名分组 · ' + ids[index].slice(4, 14));
+    assert.equal(targets.targetLabel({ accountTarget: { mode: 'pinned', id: ids[index], name: '同名分组' } }), labels[index]);
+    assert.equal(labels[index].includes(ids[index]), false);
+  }
+  assert.equal(targets.accountLabel({ mode: 'pinned', id: ids[0] }), 'API Key · ' + ids[0].slice(4, 14));
+  assert.equal(targets.accountLabel({ mode: 'pinned', id: 'registered', name: '已登录账号' }), '已登录账号');
+  assert.equal(targets.accountLabel({ mode: 'auto' }), '');
+  assert.equal(targets.targetLabel({ kind: 'fingerprint', account: 'old-registered' }), 'old-registered');
+});
+
 test('parallel requests for two accounts preserve headers, sessions and exact retest identities', async t => {
   const { runner, seen, gateway, store } = await enhancementSetup(t);
   const runs = await runner.submit({ kind: 'candy', targets: ['a', 'b'].map(id => ({ modelId: 'fixture/one', account: { mode: 'pinned', id } })), concurrency: 2 });

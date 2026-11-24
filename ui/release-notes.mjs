@@ -1,6 +1,27 @@
 export const releaseNotes = [
   {
-    version: '1.0.7', date: '2026-11-24',
+    version: '1.0.8', date: '2026-11-24',
+    url: 'https://github.com/xiaopeng66/magpie-model-lab/releases/tag/v1.0.8',
+    summary: '同一普通供应商下的多个 API Key 可分别测试同名模型，供应商和模型列表每 5 分钟自动刷新。',
+    sections: [{ heading: '更新内容', items: [
+      '按 Key 对比：普通供应商的主 Key 和附加 Key 可作为独立账号多选。同一模型可以一次测试不同上游或分组，每个 Key 单独出结果。',
+      '识别与复用：账号选择器显示名称、主／附加标记和部分 Key 前缀。收藏、自动计划、原条件复测、请求控制和每日用量均可区分这些 Key；改名或调整顺序后仍对应原账号。',
+      '列表刷新：供应商和模型每 5 分钟自动更新，也可手动刷新。页面隐藏时暂停，到期后返回会补刷；刷新失败时保留上一次的列表。',
+    ] }, { heading: '体验优化', items: [
+      '账号选择：标明停用或不适用当前模型的 Key；已绑定的 Key 不可用时提示重新选择。缺少实际路由证据时，结果显示「账号未核实」。',
+      '模型选择：刷新后保留仍有效的筛选和勾选；浅色和深色主题均使用红色「清空」按钮，便于与刷新区分。',
+      '配置导入与用量恢复：预览后配置若被改动，需重新核对再导入；异常中断后恢复用量时，只结算被中断的请求。',
+    ] }, { heading: '验证', items: [
+      '使用隔离数据完成 Node、Bun 回归和安装包逐文件校验；在 Magpie 中使用模拟上游验证多 Key 路由和停用场景，未调用真实付费模型。',
+    ] }, { heading: '安装与升级', paragraphs: [
+      '下载本页 magpie-pelican-bench-1.0.8.zip，使用同页 .zip.sha256 校验文件核对完整性；也可使用以下命令安装此版本。',
+    ], commands: [{ code: 'magpie plugin add github:xiaopeng66/magpie-model-lab#v1.0.8' }], items: [
+      '等待活动测试完成，在 Magpie 插件页关闭再开启插件，重新打开模型实验室，确认顶部显示 1.0.8。',
+      '升级沿用原包名和数据目录，保留已有参数、收藏、计划和历史；历史仍按原先的保留策略管理。',
+    ] }],
+  },
+  {
+    version: '1.0.7', date: '2026-11-24', publishedAt: '2026-11-24T09:36:11Z',
     url: 'https://github.com/xiaopeng66/magpie-model-lab/releases/tag/v1.0.7',
     summary: '详情直接填写备注，新增每日缓存用量明细，修复备注保存和结果卡片布局。',
     sections: [{ heading: '更新内容', items: [

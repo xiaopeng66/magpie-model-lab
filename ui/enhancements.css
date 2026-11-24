@@ -261,11 +261,14 @@ details.phase-settings-group > :not(summary) { margin: 12px; }
 .phase-tool-content .phase-account-option { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: start; gap: 10px; min-width: 0; min-height: 56px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
 .phase-account-option > input { margin-top: 2px; }
 .phase-account-option:has(input:checked) { border-color: var(--accent); }
-.phase-account-option:has(input:disabled) { opacity: .65; cursor: default; }
+.phase-account-option:has(input:disabled) { background: var(--surface-soft); cursor: default; }
+.phase-account-option > input:disabled { opacity: .65; }
 .phase-account-identity { display: grid; min-width: 0; gap: 3px; }
 .phase-account-name { display: -webkit-box; min-width: 0; overflow: hidden; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .phase-target-title { display: -webkit-box; max-width: 100%; overflow: hidden; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .phase-account-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--text-small); }
+.phase-account-key-meta { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
+.phase-account-reason { min-width: 0; color: var(--muted); font-size: var(--text-small); line-height: 1.5; overflow-wrap: anywhere; }
 .phase-account-state { padding: 2px 5px; border-radius: 5px; background: var(--surface-soft); color: var(--muted); font-size: var(--text-small); white-space: nowrap; }
 .phase-tool-content input[type="file"] { width: 100%; min-width: 0; padding: 6px; }
 .phase-tool-content input[type="file"]::file-selector-button { min-height: 30px; margin-right: 8px; padding: 4px 8px; border: 1px solid var(--control-line); border-radius: 6px; background: var(--surface-soft); color: var(--fg); font: inherit; cursor: pointer; }

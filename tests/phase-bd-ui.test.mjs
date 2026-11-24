@@ -22,6 +22,8 @@ test('manual multi-account selection produces distinct fixed targets and removes
   assert.equal(ui.document.activeElement.className, 'account-target-button', 'Closing the account picker returns focus to the updated account control');
   await ui.elements.get('generate').fire('click');
   assert.deepEqual(submitted.targets.map(target => target.account.id), ['account-a', 'account-b']); assert.equal(submitted.models, undefined);
+  pick.checked = false; await pick.fire('change'); pick.checked = true; await pick.fire('change');
+  assert.equal(ui.descendants(ui.elements.get('selected-models')).find(control => control.className === 'account-target-value').textContent, '自动分配');
   await ui.elements.get('clear-selection').fire('click'); pick.checked = true; await pick.fire('change');
   assert.equal(ui.descendants(ui.elements.get('selected-models')).find(control => control.className === 'account-target-value').textContent, '自动分配');
 });

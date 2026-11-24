@@ -20,11 +20,11 @@ async function content() {
 test('all published releases use one heading order and their own pinned installation command', async () => {
   const { releaseNotes, formatReleaseNotes } = await content();
   const published = releaseNotes.filter(item => !item.local);
-  assert.deepEqual(published.map(item => item.version), ['1.0.7', '1.0.6', '1.0.5', '1.0.4', '1.0.3', '1.0.2', '1.0.1', '1.0.0']);
+  assert.deepEqual(published.map(item => item.version), ['1.0.8', '1.0.7', '1.0.6', '1.0.5', '1.0.4', '1.0.3', '1.0.2', '1.0.1', '1.0.0']);
   for (const release of published) {
     const body = formatReleaseNotes(release);
     const headings = [...body.matchAll(/^## (.+)$/gm)].map(match => match[1]);
-    assert.deepEqual(headings, ['更新内容', ...(['1.0.7', '1.0.6'].includes(release.version) ? ['体验优化'] : []), ...(release.version !== '1.0.2' ? ['验证'] : []), '安装与升级', ...(release.sections.some(item => item.heading === '使用说明') ? ['使用说明'] : [])]);
+    assert.deepEqual(headings, ['更新内容', ...(['1.0.8', '1.0.7', '1.0.6'].includes(release.version) ? ['体验优化'] : []), ...(release.version !== '1.0.2' ? ['验证'] : []), '安装与升级', ...(release.sections.some(item => item.heading === '使用说明') ? ['使用说明'] : [])]);
     assert.ok(body.includes(`github:xiaopeng66/magpie-model-lab#v${release.version}`));
     assert.ok(body.startsWith(release.summary + '\n\n'));
     assert.ok(body.endsWith('\n'));
@@ -39,13 +39,13 @@ test('display dates follow actual GitHub publication times in Beijing time', asy
     if (release.publishedAt) {
       assert.equal(release.date, new Date(Date.parse(release.publishedAt) + 8 * 3600000).toISOString().slice(0, 10));
     } else {
-      assert.equal(release.version, '1.0.7', 'Historical releases must keep their actual GitHub timestamp');
+      assert.equal(release.version, '1.0.8', 'Historical releases must keep their actual GitHub timestamp');
       assert.equal(release.date, '2026-11-24', 'The prepared release date must be verified against GitHub after publishing');
     }
     assert.equal(release.url, `https://github.com/xiaopeng66/magpie-model-lab/releases/tag/v${release.version}`);
   }
   const latestPublished = releaseNotes.find(release => !release.local);
-  assert.equal(latestPublished.url, 'https://github.com/xiaopeng66/magpie-model-lab/releases/tag/v1.0.7');
+  assert.equal(latestPublished.url, 'https://github.com/xiaopeng66/magpie-model-lab/releases/tag/v1.0.8');
 });
 
 test('historical validation evidence and the 1.0.4 limits remain historical facts', async () => {

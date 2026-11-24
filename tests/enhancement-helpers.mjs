@@ -12,7 +12,7 @@ import { UsageLedger } from '../lib/usage-ledger.mjs';
 import { QueuePolicy, DEFAULT_QUEUE } from '../lib/queue-policy.mjs';
 import { FIXTURE_HTML } from './helpers.mjs';
 
-export async function enhancementSetup(t, { handler, accounts, runnerOptions = {}, settings: settingsPatch } = {}) {
+export async function enhancementSetup(t, { handler, accounts, runnerOptions = {}, settings: settingsPatch, gatewayOptions = {} } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'model-lab-bd-')), seen = [];
   const candidates = accounts || [{ provider: 'fixture', id: 'a', name: 'A', enabled: true }, { provider: 'fixture', id: 'b', name: 'B', enabled: true }];
   const routes = new Map();
@@ -42,7 +42,7 @@ export async function enhancementSetup(t, { handler, accounts, runnerOptions = {
   const settings = new Settings(dir, { capabilities: { presets: true, retention: true, progressNotice: true, queue: true, usage: true } }); await settings.init();
   if (settingsPatch) await settings.save({ expectedRevision: settings.snapshot().revision, patch: settingsPatch });
   const annotations = new Annotations(dir); await annotations.init();
-  const gateway = new Gateway({ url: `http://127.0.0.1:${upstream.address().port}` });
+  const gateway = new Gateway({ url: `http://127.0.0.1:${upstream.address().port}`, ...gatewayOptions });
   const usage = new UsageLedger(dir); await usage.init();
   const queuePolicy = new QueuePolicy(() => settings.snapshot().queue || DEFAULT_QUEUE, { dir }); await queuePolicy.init();
   const runner = new Runner({ store, gateway, settings, annotations, usage, queuePolicy, ...runnerOptions });

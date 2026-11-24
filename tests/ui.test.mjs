@@ -683,6 +683,23 @@ test("catalog refresh resets unsupported effort while preserving the selected mo
   await ui.elements.get("generate").fire("click"); assert.equal(ui.descendants(ui.elements.get("results"), "article").length, 1);
 });
 
+test('model catalog refresh waits five visible-page minutes, coalesces clicks and retains valid selections', async () => {
+  let clock = 0, requests = 0, release;
+  const ui = await uiHarness({ now: () => clock, request: async path => {
+    if (path === 'api/bootstrap') return Response.json(boot([]));
+    if (path === 'api/events') return new Response(new ReadableStream());
+    if (path === 'api/models') { requests++; await new Promise(resolve => { release = resolve; }); return Response.json({ models: [model, { ...model, id: 'new/two', provider: 'new' }] }); }
+    throw Error(path);
+  } });
+  await chooseProvider(ui); const pick = ui.descendants(ui.elements.get('model-list'), 'input')[0]; pick.checked = true; await pick.fire('change');
+  clock = 299999; ui.tickIntervals(); assert.equal(requests, 0);
+  ui.document.visibilityState = 'hidden'; clock++; ui.tickIntervals(); assert.equal(requests, 0);
+  ui.document.visibilityState = 'visible'; ui.tickIntervals(); const refresh = ui.elements.get('refresh-models'); await refresh.fire('click'); assert.equal(requests, 1);
+  release(); await waitFor(() => !refresh.disabled); assert.equal(ui.elements.get('provider').value, 'fixture');
+  assert.ok(ui.descendants(ui.elements.get('provider'), 'option').some(option => option.value === 'new'));
+  assert.equal(ui.descendants(ui.elements.get('model-list'), 'input')[0].checked, true);
+});
+
 test("thumbnail scales a full logical viewport instead of cropping a fixed-size animation", async () => {
   const ui = await uiHarness({ bootstrap: boot([run]), detail: async () => ({ ...run, html: FIXTURE_HTML, previewUrl: `preview/${id}?key=test` }) });
   await waitFor(() => ui.descendants(ui.elements.get("results"), "iframe").length === 1);

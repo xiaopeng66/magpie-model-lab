@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { enhancementSetup } from './enhancement-helpers.mjs';
 import { waitFor } from './helpers.mjs';
 import { sampleFingerprint } from '../lib/fingerprint-sample.mjs';
+import { Gateway } from '../lib/gateway.mjs';
 const ledger = await import('../lib/usage-ledger.mjs');
 const policyModule = await import('../lib/queue-policy.mjs').catch(() => ({}));
 async function standalone(t, now = () => Date.parse('2026-11-22T12:00:00Z')) {
@@ -123,7 +124,7 @@ test('failed cooldown persistence preserves the active local block and corrupt r
 });
 
 test('fingerprint propagates a not-yet-fetched readmission decision without turning it into sample failure',async()=>{
-  const gateway={url:'http://127.0.0.1:9',headers:{authorization:'Bearer fixture'},redact:error=>String(error),route:async()=>({})};
+  const gateway=Object.assign(new Gateway({url:'http://127.0.0.1:9',key:'fixture'}),{route:async()=>({})});
   await assert.rejects(sampleFingerprint(gateway,{model:'fixture/one',api:'chat_completions',effort:'',maxTokens:1},{prompt:'test',expected_count:320},{beforeFetch:()=>{throw Object.assign(Error('readmit'),{readmit:true});}}),error=>error.readmit===true);
 });
 

@@ -140,7 +140,7 @@ export async function uiHarness({ bootstrap, detail, create, cleanup, open, open
     disconnect() { observed.clear(); }
   }
   const copied = [];
-  const timers = new Map(); let nextTimer = 0;
+  const timers = new Map(), intervals = new Map(); let nextTimer = 0;
   const parent = {};
   const location = { search, replace: navigate }, history = { replaceState(_state, _title, url) { location.search = new URL(url, "http://fixture.local/").search; } };
   class TestDate extends Date {
@@ -149,13 +149,13 @@ export async function uiHarness({ bootstrap, detail, create, cleanup, open, open
   }
   runInNewContext(source, { Date: TestDate, performance: { now: monotonicNow }, crypto: webcrypto, document, fetch, window, parent, history, structuredClone, batchKey, historyBatches, historyTime, recentTestBatches, renderDailyHistory, createBatchRetest, openRetestDrawer, failureInfo, createResultInsights, createSettingsUI, mergeProgress, createRuntimeClock, createRunProgressView, createAccountTargets, createExperimentControls, repeatedResultGroups, createPresetManager, generationTimeoutFromSeconds, createRunNotes, createLabTools, createChangelog, targetLabel, normalizeTarget, readGrade, suiteCatalog, historyMatches, AbortController,
     navigator: { clipboard: { writeText: writeClipboard || (async value => copied.push(value)) } }, location, matchMedia: () => ({ matches: false }), CSS: { supports: () => true },
-    URLSearchParams, Response, TextDecoder, ResizeObserver, ...(intersection ? { IntersectionObserver } : {}), innerWidth: viewport.width, innerHeight: viewport.height, setInterval() {}, setTimeout(callback) { timers.set(++nextTimer, callback); return nextTimer; }, clearTimeout(id) { timers.delete(id); },
+    URLSearchParams, Response, TextDecoder, ResizeObserver, ...(intersection ? { IntersectionObserver } : {}), innerWidth: viewport.width, innerHeight: viewport.height, setInterval(callback, delay) { intervals.set(callback, delay); }, setTimeout(callback) { timers.set(++nextTimer, callback); return nextTimer; }, clearTimeout(id) { timers.delete(id); },
     requestAnimationFrame(listener) { frames.set(++nextFrame, listener); return nextFrame; }, cancelAnimationFrame(id) { frames.delete(id); },
     addEventListener(type, listener) { (listeners[type] ||= []).push(listener); }, console });
   const dispatch = (type, value) => { for (const listener of listeners[type] || []) listener(value); };
   return { elements, document, event, observed, copied, parent, location, window, closeStream() { controller.close(); }, timers, runTimer(id) { const callback = timers.get(id); timers.delete(id); callback?.(); }, intersect(element, visible) { intersections.get(element)?.([{ target: element, isIntersecting: visible }]); }, pendingFrames: () => frames.size,
     flushFrames() { const pending = [...frames.values()]; frames.clear(); for (const listener of pending) listener(); },
-    dispatch, message(value) { dispatch("message", value); }, descendants(element, tag) {
+    dispatch, tickIntervals() { for (const callback of intervals.keys()) callback(); }, message(value) { dispatch("message", value); }, descendants(element, tag) {
     const out = [];
     const visit = (item) => { if (!tag || item.tagName === tag.toUpperCase()) out.push(item); for (const child of item.children) visit(child); };
     visit(element); return out;

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createLabTools } from '../ui/lab-tools.mjs';
 import { uiHarness } from './ui-harness.mjs';
 import { waitFor } from './helpers.mjs';
+import { createHash } from 'node:crypto';
 const imported = { schema: 'model-lab-config-v1', payload: { settings: { retention: { days: 7 } }, favorites: [{ sourceRef: 'target-1', modelId: 'fixture/one', account: { mode: 'rebind' } }], plans: [] } };
 async function setup(t, { api = async () => ({}), confirmAction = async () => true, settingsUI = {}, records = () => [] } = {}) {
   const ui = await uiHarness({ bootstrap: { models: [], runs: [], defaultPrompt: 'test' } }); await waitFor(() => !ui.elements.get('generate').disabled); t.after(() => ui.closeStream());
@@ -23,7 +24,7 @@ async function openImport(env) {
 }
 test('config File API import binds accounts and invalidates an in-flight preview after any choice change', async t => {
   let resolvePreview, sent; const env = await setup(t, { api: async (path, options) => {
-    if (path === 'api/accounts') return { accounts: [{ provider: 'fixture', id: 'account-a', enabled: true }] };
+    if (path.startsWith('api/accounts')) return { accounts: [{ provider: 'fixture', id: 'account-a', enabled: true }] };
     if (path === 'api/config/import/preview') { sent = JSON.parse(options.body); return new Promise(resolve => { resolvePreview = resolve; }); }
     throw Error(path);
   } }); await openImport(env);
@@ -34,13 +35,32 @@ test('config File API import binds accounts and invalidates an in-flight preview
 });
 test('a resolved preview applies the token and confirmation after showing affected plans', async t => {
   let applied; const env = await setup(t, { api: async (path, options) => {
-    if (path === 'api/accounts') return { accounts: [{ provider: 'fixture', id: 'account-a' }] };
+    if (path.startsWith('api/accounts')) return { accounts: [{ provider: 'fixture', id: 'account-a' }] };
     if (path.endsWith('/preview')) return { token: 'current-token', differences: [{ sourceRef: 'target-1', action: 'add' }], pausedPlanIds: ['plan'], unresolved: [], retentionImpact: { days: 1, candidateCount: 2 } };
     if (path.endsWith('/apply')) { applied = JSON.parse(options.body); return { applied: true }; }
     throw Error(path);
   } }); await openImport(env); await env.find('预览配置差异').fire('click'); await env.find('确认应用导入').fire('click');
   assert.deepEqual(applied, { token: 'current-token', confirm: true, confirmRetention: true });
   assert.ok(env.ui.descendants(env.body).some(node => node.textContent.includes('保持暂停')));
+});
+
+test('configuration rebinding uses the target model and readable Key labels while skipping unavailable Keys', async t => {
+  const id = 'key:' + createHash('sha256').update('synthetic-config-binding-key').digest('hex'); let requested;
+  const env = await setup(t, { api: async path => {
+    requested = new URL(path, 'http://fixture.local/');
+    return { capabilities: { pinned: true }, warning: '部分账号缓存不可读', accounts: [
+      { provider: 'fixture', id, name: '分组', kind: 'key', enabled: true, available: null },
+      { provider: 'fixture', id: 'unsupported', available: false },
+    ] };
+  } });
+  env.tools.appendLocal(env.body); await env.find('从本地 JSON 导入').fire('click');
+  const file = env.ui.descendants(env.body, 'input').find(input => input.type === 'file');
+  file.files = [{ size: 500, text: async () => JSON.stringify(imported) }]; await file.fire('change');
+  assert.equal(requested.searchParams.get('model'), 'fixture/one'); assert.equal(requested.searchParams.get('provider'), 'fixture');
+  const input = env.ui.descendants(env.body, 'select').find(input => input.getAttribute('aria-label') === '导入目标账号绑定');
+  assert.equal(input.children.some(option => option.value === 'unsupported'), false);
+  assert.equal(input.children.find(option => option.value === id).textContent, '分组 · ' + id.slice(4, 14));
+  assert.ok(env.ui.descendants(env.body).some(node => node.textContent.includes('部分账号缓存不可读')));
 });
 test('invalid dates are shown beside the filter and do not apply conditions', async t => {
   const env = await setup(t); env.tools.openHistoryFilters();
@@ -120,7 +140,7 @@ test('a late read error from the previous config file does not replace the curre
 test('a stale config preview failure cannot disable a newer file preview or replace its apply token', async t => {
   let rejectOldPreview, previews = 0, applied;
   const env = await setup(t, { api: async (path, options) => {
-    if (path === 'api/accounts') return { accounts: [{ provider: 'fixture', id: 'account-a', enabled: true }] };
+    if (path.startsWith('api/accounts')) return { accounts: [{ provider: 'fixture', id: 'account-a', enabled: true }] };
     if (path === 'api/config/import/preview') {
       if (++previews === 1) return new Promise((_resolve, reject) => { rejectOldPreview = reject; });
       return { token: 'new-file-preview', differences: [], pausedPlanIds: [], unresolved: [] };

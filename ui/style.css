@@ -116,8 +116,15 @@ h3 { font-size: var(--text-body); font-weight: 600; }
 .section-heading, .results-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .model-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; }
 .model-heading h2, .model-heading .count { white-space: nowrap; }
-.model-heading-actions { display: flex; flex: none; align-items: center; gap: 2px; }
-#clear-selection { padding-inline: 4px; font-size: var(--text-small); white-space: nowrap; }
+.model-heading-actions { display: flex; flex: none; align-items: center; gap: 6px; }
+#clear-selection {
+  --button-fill: var(--error); --button-edge: var(--error); --button-ink: var(--surface);
+  --button-hover-edge: var(--error); --button-hover-fill: color-mix(in srgb, var(--error), var(--fg) 12%);
+  --button-active-fill: color-mix(in srgb, var(--error), var(--fg) 22%);
+  padding-inline: 8px; font-size: var(--text-small); white-space: nowrap;
+}
+#clear-selection:focus-visible { outline-color: var(--surface); outline-offset: -3px; }
+#clear-selection:disabled { --button-fill: var(--error-bg); --button-ink: var(--muted); --button-edge: var(--line); opacity: 1; }
 .help { color: var(--muted); font-size: var(--text-small); line-height: 1.6; }
 .count { padding: 2px 6px; border-radius: 6px; background: var(--surface-soft); color: var(--muted); font-size: var(--text-small); font-weight: 500; font-variant-numeric: tabular-nums; }
 .provider-row { margin-top: 8px; }

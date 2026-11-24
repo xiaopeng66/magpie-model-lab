@@ -50,7 +50,7 @@ test('account confirmation waits for the cache response before accepting an unav
   const pending = targets.open({ id: 'fixture/model-a', provider: 'fixture' }, null, { initial: [{ mode: 'pinned', id: 'previous-account' }], onApply: accounts => { applied = accounts; } });
   await waitFor(() => resolveRead);
   const apply = find(ui, 'drawer-footer', '确认账号选择'); assert.equal(apply.disabled, true, 'The previous cached account must not be confirmed before refreshing its availability');
-  assert.equal(find(ui, 'drawer-content', '刷新缓存账号').disabled, true);
+  assert.equal(find(ui, 'drawer-content', '刷新账号').disabled, true);
   resolveRead({ capabilities: { pinned: true }, accounts: [{ id: 'previous-account', enabled: false }] }); await pending;
   await apply.fire('click'); assert.equal(applied, undefined);
   const automatic = ui.descendants(body, 'input').find(control => control.getAttribute('aria-label') === '自动分配'); automatic.checked = true; await automatic.fire('change');

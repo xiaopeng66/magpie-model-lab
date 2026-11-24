@@ -14,7 +14,7 @@ import { numberReply } from "./fingerprint-helpers.mjs";
 
 const sse = text => `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n` +
   `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`;
-const gatewayFixture = () => ({ url: "http://127.0.0.1:54321", headers: { authorization: "Bearer fixture" },
+const gatewayFixture = () => Object.assign(new Gateway({ url: "http://127.0.0.1:54321", key: "fixture" }), {
   route: async () => ({ model: "fixture/one", provider: "fixture" }), redact: safeError,
   models: async () => [{ id: "fixture/one", name: "One", provider: "fixture", efforts: [] }] });
 const sampleOptions = { model: "fixture/one", api: "chat_completions", maxTokens: 1000, strict: false };
