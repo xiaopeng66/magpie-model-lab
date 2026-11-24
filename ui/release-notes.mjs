@@ -1,6 +1,30 @@
 export const releaseNotes = [
   {
-    version: '1.0.6', date: '2026-11-24',
+    version: '1.0.7', date: '2026-11-24',
+    url: 'https://github.com/xiaopeng66/magpie-model-lab/releases/tag/v1.0.7',
+    summary: '详情直接填写备注，新增每日缓存用量明细，修复备注保存和结果卡片布局。',
+    sections: [{ heading: '更新内容', items: [
+      '记录备注：在详情中直接显示输入框和保存按钮，动画、指纹、糖果、自动结果及历史详情统一使用。',
+      '历史检索：保留备注搜索，移除标签输入、标签筛选和标签匹配。已有记录的备注与保护状态继续沿用。',
+      '备注保存：改进未保存草稿、保存冲突核对及保存期间继续编辑的处理；修复清空备注后重连误报冲突，以及响应异常后的保存确认。',
+      '备注与保护：加强异常输入校验，避免已有备注或保护状态被意外清除。',
+      '每日用量：增加输入、输出、缓存读取与命中率，接口提供时显示缓存写入；采用 K/M/B 简写并可查看完整数量，未返回明细时明确标示。',
+      '缓存计数：兼容 Chat Completions、Responses、原生 Messages 和 DeepSeek 的用量字段，修复单独返回缓存的漏计，按有效明细的 Token 数计算命中率。',
+    ] }, { heading: '体验优化', items: [
+      '结果卡片：状态或日期与操作按钮保持同一行，统一卡片最小宽度，适配窄窗口、重复结果分组和触屏按钮尺寸。',
+      '本地升级：兼容 Windows PowerShell 的诊断输出处理，并严格核验本次命令的退出码，避免正常启动被误判失败或无效命令被误判成功。',
+    ] }, { heading: '验证', items: [
+      '使用隔离数据和合成网关完成 Node、Magpie Bun、Windows PowerShell 5.1 与 PowerShell 7 回归，以及静态、接口安全和安装包检查。',
+      '检查五个页面及相关详情、设置与筛选窗口；结果卡片覆盖 320–1920 像素、八种状态、重复分组和触屏样式，未调用真实付费模型。',
+    ] }, { heading: '安装与升级', paragraphs: [
+      '下载本页 magpie-pelican-bench-1.0.7.zip，使用同页 .zip.sha256 校验文件核对完整性；也可使用以下命令安装此版本。',
+    ], commands: [{ code: 'magpie plugin add github:xiaopeng66/magpie-model-lab#v1.0.7' }], items: [
+      '等待活动测试完成，在 Magpie 插件页关闭再开启插件，重新打开模型实验室并确认顶部版本为 1.0.7。',
+      '沿用原包名和数据目录，升级保留已有参数、模型、计划、备注、保护状态及用量；历史仍按原先的保留策略管理。',
+    ] }],
+  },
+  {
+    version: '1.0.6', date: '2026-11-24', publishedAt: '2026-11-24T05:26:00Z',
     url: 'https://github.com/xiaopeng66/magpie-model-lab/releases/tag/v1.0.6',
     summary: '相比 1.0.5，新增参数方案、多账号与多轮测试、历史标注、请求控制、每日用量和配置迁移。',
     sections: [

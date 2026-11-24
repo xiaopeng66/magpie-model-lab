@@ -38,7 +38,7 @@ export async function startPhaseBDFixture({ dataDir, proofDir, port = 0, seed = 
   const call = async (path, input) => { const response = await fetch(service.url + path, { method: 'POST', headers, body: JSON.stringify(input) }); if (!response.ok) throw Error(await response.text()); return response.json(); };
   if (seed) {
     for (const account of accounts.slice(0, 2)) { const { favorite } = await call('api/favorites/save', { modelId: 'fixture/model-1', account: { mode: 'pinned', id: account.user }, maxTokens: 1200, timeoutMs: 600000 }); await call('api/schedules/save', { favoriteIds: [favorite.id], kinds: ['candy'], mode: 'times', times: ['09:00', '18:00'], days: [1, 2, 3, 4, 5], timeZone: 'Asia/Shanghai', enabled: false }); }
-    await call('api/runs/annotations', { runId: runs.at(-1).id, expectedRunRevision: 0, note: '合成复核备注 · 多账号与多题验证', tags: ['实验', '待复核'] });
+    await call('api/runs/annotations', { runId: runs.at(-1).id, expectedRunRevision: 0, note: '合成复核备注 · 多账号与历史记录验证' });
   }
   return { url: service.url, dataDir: dir, headers, seen: upstream.seen, service, async close() { await service.close(); for (const cleanup of cleanups.reverse()) await cleanup(); if (owned) await rm(dir, { recursive: true, force: true }); } };
 }

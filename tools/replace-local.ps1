@@ -123,8 +123,14 @@ function Wait-LabPortRelease([int]$Port) {
   throw 'Plugin still owns its port; no directories were switched'
 }
 function Invoke-LabPluginCommand([string]$MagpieExe, [string]$PluginSpec, [string]$Mode) {
-  & $MagpieExe plugin $Mode $PluginSpec | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw "Plugin $Mode command failed" }
+  $previousErrorPreference = $ErrorActionPreference
+  try {
+    # Windows PowerShell treats redirected native stderr as an error record.
+    $ErrorActionPreference = 'Continue'
+    $global:LASTEXITCODE = $null
+    & $MagpieExe plugin $Mode $PluginSpec 2>&1 | Out-Null
+    if ($null -eq $global:LASTEXITCODE -or $global:LASTEXITCODE -ne 0) { throw "Plugin $Mode command failed" }
+  } finally { $ErrorActionPreference = $previousErrorPreference }
 }
 function Invoke-LabLocalReplacement {
   [CmdletBinding()]

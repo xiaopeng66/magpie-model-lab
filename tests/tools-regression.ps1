@@ -109,6 +109,40 @@ function Move-Item {
 }
 
 try {
+  Invoke-Case '017 successful native CLI diagnostics do not interrupt local replacement' {
+    . (Join-Path $toolsProject 'tools/replace-local.ps1')
+    $nativeRoot = Assert-TestPath (Join-Path $toolsTestRoot 'native-success')
+    Write-TestFile (Join-Path $nativeRoot 'plugin') "process.stderr.write('fixture: ordinary CLI diagnostic\n'); process.exit(0);"
+    $nodeExe = (Get-Command node.exe -ErrorAction Stop).Source
+    Push-Location -LiteralPath $nativeRoot
+    try { foreach ($mode in @('off','on')) { Invoke-LabPluginCommand $nodeExe 'fixture' $mode 2>&1 | Out-Null } }
+    finally { Pop-Location }
+    Check ($ErrorActionPreference -eq 'Stop') 'CLI execution changed the caller error preference'
+  }
+  Invoke-Case '017 a native CLI failure is rejected using its actual exit code' {
+    . (Join-Path $toolsProject 'tools/replace-local.ps1')
+    $nativeRoot = Assert-TestPath (Join-Path $toolsTestRoot 'native-failure')
+    Write-TestFile (Join-Path $nativeRoot 'plugin') "process.stderr.write('fixture: failing CLI diagnostic\n'); process.exit(7);"
+    $nodeExe = (Get-Command node.exe -ErrorAction Stop).Source
+    Push-Location -LiteralPath $nativeRoot
+    try {
+      try { Invoke-LabPluginCommand $nodeExe 'fixture' 'on' 2>&1 | Out-Null; throw 'Expected CLI exit rejection' }
+      catch { Check ($_.Exception.Message -eq 'Plugin on command failed') 'CLI failure was not reported from the actual exit code' }
+    } finally { Pop-Location }
+    Check ($ErrorActionPreference -eq 'Stop') 'A failed CLI changed the caller error preference'
+  }
+  Invoke-Case '017 a missing CLI or script without an exit code cannot reuse a prior success' {
+    . (Join-Path $toolsProject 'tools/replace-local.ps1')
+    $withoutExit = Assert-TestPath (Join-Path $toolsTestRoot 'without-exit.ps1')
+    Write-TestFile $withoutExit "param(`$Verb,`$Mode,`$Spec)`nWrite-Output 'fixture: no exit code'"
+    foreach ($cli in @($withoutExit, (Join-Path $toolsTestRoot 'missing-cli.exe'))) {
+      $global:LASTEXITCODE = 0
+      $rejected = $false
+      try { Invoke-LabPluginCommand $cli 'fixture' 'on' } catch { $rejected = $true }
+      Check $rejected 'A command with no exit code was accepted using a prior success'
+      Check ($ErrorActionPreference -eq 'Stop') 'An invalid CLI changed the caller error preference'
+    }
+  }
   Invoke-Case '015 failure leaves no final or temporary ZIP' {
     $root = New-TestProject 'package-failure' -MissingIndex; $out = Assert-TestPath (Join-Path $toolsTestRoot 'package-failure-out')
     try { & (Join-Path $root 'tools/package.ps1') -OutputDirectory $out | Out-Null; throw 'Expected packaging failure' } catch { Check ($_.Exception.Message -notmatch 'Expected packaging failure') 'The invalid project unexpectedly packaged' }

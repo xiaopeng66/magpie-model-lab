@@ -12,6 +12,7 @@
   --font-code: "Cascadia Code", "Consolas", monospace;
   --text-small: 11px; --text-body: 12px; --text-label: 13px; --text-title: 18px;
   --field-gap: 6px; --form-gap: 12px; --settings-section-gap: 16px;
+  --result-card-min: 200px; --result-card-max: 220px;
   --ease: 160ms ease;
 }
 :root[data-theme="dark"] {
@@ -232,8 +233,8 @@ details[open] > summary > .chevron, .disclosure-row[aria-expanded="true"] > .che
 .retry-connection { margin-left: 8px; color: var(--accent); }
 .preview-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 2px 6px 12px 2px; }
 .preview-scroll:focus-visible { outline-offset: -2px; }
-.results-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 180px), 1fr)); align-items: start; gap: 14px; }
-.result-card { min-width: 0; width: 100%; max-width: 220px; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); transition: border-color var(--ease), box-shadow var(--ease); }
+.results-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--result-card-min)), 1fr)); align-items: start; gap: 14px; }
+.result-card { min-width: 0; width: 100%; max-width: var(--result-card-max); padding: 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); transition: border-color var(--ease), box-shadow var(--ease); }
 .result-card:focus-within { border-color: var(--accent); }
 .card-header { display: flex; align-items: center; height: 36px; margin-bottom: 6px; }
 .card-model { min-width: 0; width: 100%; }
@@ -254,9 +255,9 @@ details[open] > summary > .chevron, .disclosure-row[aria-expanded="true"] > .che
 .progress-line { width: 36px; height: 3px; border-radius: 3px; background: var(--line); overflow: hidden; }
 .progress-line::after { content: ""; display: block; width: 50%; height: 100%; background: var(--accent); border-radius: inherit; animation: progress 1.4s ease-in-out infinite alternate; }
 @keyframes progress { to { transform: translateX(100%); } }
-.card-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; min-height: 28px; margin-top: 6px; }
+.card-footer { display: flex; flex-wrap: nowrap; align-items: center; justify-content: space-between; gap: 6px; min-height: 28px; margin-top: 6px; }
 .card-footer .badge { flex: none; padding: 0; background: transparent; line-height: 18px; }
-.card-footer > .help { line-height: 18px; }
+.card-footer > .help { flex: none; line-height: 18px; white-space: nowrap; }
 .card-actions { display: flex; flex: none; align-items: center; justify-content: end; gap: 2px; margin-left: auto; }
 .card-actions .icon-button { width: 26px; height: 26px; min-height: 26px; padding: 5px; border-radius: 6px; }
 .card-actions .icon { width: 15px; height: 15px; }
@@ -529,6 +530,7 @@ details[open] > summary > .chevron, .disclosure-row[aria-expanded="true"] > .che
   .brand h1 { font-size: 15px; }
 }
 @media (pointer: coarse) {
+  :root { --result-card-min: 240px; --result-card-max: 260px; }
   .results-heading { min-height: 44px; }
   button, .quiet, .primary, .view-tab, .history-delete { min-height: 44px; }
   .icon-button, .selected-row .icon-button { width: 44px; height: 44px; min-height: 44px; }
@@ -543,9 +545,6 @@ details[open] > summary > .chevron, .disclosure-row[aria-expanded="true"] > .che
   .calendar { width: 342px; }
   .calendar-day, .calendar-days > span { min-height: 44px; height: 44px; }
   .result-card { padding: 8px; }
-  .card-footer { flex-wrap: wrap; gap: 4px; }
-  .card-footer .badge { width: 100%; }
-  .card-actions { width: 100%; flex-wrap: wrap; gap: 4px; justify-content: space-between; }
   .card-actions .icon-button { width: 44px; height: 44px; min-height: 44px; padding: 12px; }
   .tab-buttons .quiet { min-height: 44px; }
   .animation-card .tab-buttons .icon-button, .favorite-card-header .icon-button, .history-actions .icon-button { width: 44px; height: 44px; min-height: 44px; }

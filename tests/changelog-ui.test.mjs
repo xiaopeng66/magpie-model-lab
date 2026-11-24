@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { uiHarness } from './ui-harness.mjs';
 import { waitFor } from './helpers.mjs';
 
-async function setup(t, version = '1.0.6') {
+async function setup(t, version = '1.0.7') {
   const ui = await uiHarness({ bootstrap: { version, models: [], runs: [], defaultPrompt: 'test' } });
   await waitFor(() => !ui.elements.get('generate').disabled);
   t.after(() => ui.closeStream());
@@ -16,14 +16,15 @@ test('the version entry opens all versions with only the installed version expan
   const { ui, entry, body } = await setup(t);
   assert.equal(entry.hidden, false);
   assert.equal(entry.getAttribute('aria-haspopup'), 'dialog');
-  assert.equal(ui.elements.get('header-version').textContent, 'v1.0.6');
+  assert.equal(ui.elements.get('header-version').textContent, 'v1.0.7');
   await entry.fire('click');
   assert.equal(ui.elements.get('drawer-title').textContent, '更新日志');
   const versions = ui.descendants(body, 'details');
-  assert.deepEqual(versions.map(item => item.dataset.version), ['1.0.6', '1.0.5', '1.0.4', '1.0.3', '1.0.2', '1.0.1', '1.0.0']);
-  assert.deepEqual(versions.filter(item => item.open).map(item => item.dataset.version), ['1.0.6']);
+  assert.deepEqual(versions.map(item => item.dataset.version), ['1.0.7', '1.0.6', '1.0.5', '1.0.4', '1.0.3', '1.0.2', '1.0.1', '1.0.0']);
+  assert.deepEqual(versions.filter(item => item.open).map(item => item.dataset.version), ['1.0.7']);
   assert.ok(!ui.descendants(versions[0]).some(item => item.textContent === '本地未发布'));
-  assert.equal(ui.descendants(body, 'a').filter(item => item.textContent === 'GitHub 发行说明').length, 7);
+  assert.ok(ui.descendants(versions[0], 'a').some(item => item.href === 'https://github.com/xiaopeng66/magpie-model-lab/releases/tag/v1.0.7'));
+  for (const version of versions) assert.equal(ui.descendants(version, 'a').filter(item => item.textContent === 'GitHub 发行说明' && item.href === `https://github.com/xiaopeng66/magpie-model-lab/releases/tag/v${version.dataset.version}`).length, 1);
 });
 
 test('the bootstrap version determines the expanded release instead of array position', async t => {
@@ -55,7 +56,7 @@ test('closing the log restores entry focus and reopening resets release disclosu
   assert.equal(ui.elements.get('favorite-drawer').hidden, true);
   assert.equal(ui.document.activeElement, entry);
   await entry.fire('click');
-  assert.deepEqual(ui.descendants(body, 'details').filter(item => item.open).map(item => item.dataset.version), ['1.0.6']);
+  assert.deepEqual(ui.descendants(body, 'details').filter(item => item.open).map(item => item.dataset.version), ['1.0.7']);
   const close = ui.descendants(ui.elements.get('drawer-footer'), 'button').find(item => item.textContent === '关闭');
   assert.ok(close); await close.fire('click');
   assert.equal(ui.document.activeElement, entry);

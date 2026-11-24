@@ -40,7 +40,7 @@ test('legacy protection is readable without rewriting files and uses the ordinar
   assert.equal(annotations.isProtected(id), true, 'Editing a note must not remove old protection');
   const cleared = await annotations.save({ runId: id, expectedRunRevision: 3, protected: false });
   assert.equal(annotations.isProtected(id), false); assert.equal(cleared.annotation.protected, false);
-  assert.equal(cleared.annotation.note, '修改备注'); assert.deepEqual(cleared.annotation.tags, ['保留']);
+  assert.equal(cleared.annotation.note, '修改备注'); assert.equal(Object.hasOwn(cleared.annotation, 'tags'), false);
   assert.equal(Object.hasOwn(JSON.parse(await readFile(statePath, 'utf8')).byRunId[id], 'restoreProtection'), false, 'An explicit ordinary protection change retires its old marker');
   await annotations.close(); const reopened = new Annotations(dir); await reopened.init(); t.after(() => reopened.close());
   assert.equal(reopened.isProtected(id), false);

@@ -36,11 +36,11 @@ test('repeat controls show the original candy request count and never submit an 
 
 test('notes save explicitly with a local revision and a conflict preserves the draft', async () => {
   const record = run(); let writes = 0, saved;
-  const ui = await uiHarness({ bootstrap: boot({ runs: [record], annotationsAvailable: true, annotations: { revision: 3, scopeRunIds: [record.id], byRunId: { [record.id]: { protected: true, note: '原备注', tags: ['实验'], revision: 2 } } } }), detail: () => ({ ...record, annotation: { revision: 3, runId: record.id, runRevision: 2, annotation: { protected: true, note: '原备注', tags: ['实验'], revision: 2 } } }), annotations: input => { writes++; saved = input; throw Object.assign(new Error('此记录注释已更新'), { status: 409 }); }, search: '?view=candy' });
+  const ui = await uiHarness({ bootstrap: boot({ runs: [record], annotationsAvailable: true, annotations: { revision: 3, scopeRunIds: [record.id], byRunId: { [record.id]: { protected: true, note: '原备注', revision: 2 } } } }), detail: () => ({ ...record, annotation: { revision: 3, runId: record.id, runRevision: 2, annotation: { protected: true, note: '原备注', revision: 2 } } }), annotations: input => { writes++; saved = input; throw Object.assign(new Error('此记录注释已更新'), { status: 409 }); }, search: '?view=candy' });
   const open = await waitFor(() => button(ui, 'candy-results', '查看详情')); await open.fire('click');
   const note = ui.descendants(ui.elements.get('drawer-content'), 'textarea').find(input => input.getAttribute('aria-label') === '记录备注'); assert.ok(note);
   note.value = '本地未保存草稿'; await note.fire('input'); assert.equal(writes, 0);
-  await button(ui, 'drawer-content', '保存备注与标签').fire('click'); assert.equal(writes, 1); assert.equal(saved.expectedRunRevision, 2); assert.equal(saved.note, '本地未保存草稿'); assert.equal(note.value, '本地未保存草稿');
+  await button(ui, 'drawer-content', '保存备注').fire('click'); assert.equal(writes, 1); assert.equal(saved.expectedRunRevision, 2); assert.equal(saved.note, '本地未保存草稿'); assert.equal(note.value, '本地未保存草稿');
   assert.ok(ui.descendants(ui.elements.get('drawer-content')).some(element => element.textContent.includes('草稿保留')));
 });
 
@@ -49,15 +49,15 @@ test('notes edited during an in-flight save survive acknowledgement and reopenin
   const ui = await uiHarness({ bootstrap: boot({ runs: [record], annotationsAvailable: true }), detail: () => ({ ...record, annotation: { runId: record.id, revision: annotation ? 1 : 0, runRevision: annotation ? 1 : 0, annotation } }), annotations: () => new Promise(resolve => { resolveWrite = resolve; }), search: '?view=candy' });
   await (await waitFor(() => button(ui, 'candy-results', '查看详情'))).fire('click');
   const note = ui.descendants(ui.elements.get('drawer-content'), 'textarea').find(input => input.getAttribute('aria-label') === '记录备注');
-  note.value = '第一版'; await note.fire('input'); const pending = button(ui, 'drawer-content', '保存备注与标签').fire('click'); await waitFor(() => resolveWrite);
-  note.value = '继续编辑的新草稿'; await note.fire('input'); annotation = { protected: false, note: '第一版', tags: [], revision: 1 };
+  note.value = '第一版'; await note.fire('input'); const pending = button(ui, 'drawer-content', '保存备注').fire('click'); await waitFor(() => resolveWrite);
+  note.value = '继续编辑的新草稿'; await note.fire('input'); annotation = { protected: false, note: '第一版', revision: 1 };
   resolveWrite({ runId: record.id, revision: 1, runRevision: 1, annotation }); await pending; assert.equal(note.value, '继续编辑的新草稿');
   await ui.elements.get('drawer-close').fire('click'); await button(ui, 'candy-results', '查看详情').fire('click');
   const reopened = ui.descendants(ui.elements.get('drawer-content'), 'textarea').find(input => input.getAttribute('aria-label') === '记录备注'); assert.equal(reopened.value, '继续编辑的新草稿'); ui.closeStream();
 });
 
 test('history search matches notes from the lightweight annotation index without reading output', async () => {
-  const first = run(), second = run(); const ui = await uiHarness({ bootstrap: boot({ runs: [first, second], annotations: { revision: 1, scopeRunIds: [first.id, second.id], byRunId: { [first.id]: { protected: false, note: '检查时区', tags: [], revision: 1 } } } }), detail: () => { throw new Error('search must not read output'); }, search: '?view=history' });
+  const first = run(), second = run(); const ui = await uiHarness({ bootstrap: boot({ runs: [first, second], annotations: { revision: 1, scopeRunIds: [first.id, second.id], byRunId: { [first.id]: { protected: false, note: '检查时区', revision: 1 } } } }), detail: () => { throw new Error('search must not read output'); }, search: '?view=history' });
   await waitFor(() => ui.elements.get('history-panel').hidden === false); assert.ok(ui.elements.get('history-search'));
   ui.elements.get('history-search').value = '时区'; await ui.elements.get('history-search').fire('input');
   assert.equal(ui.descendants(ui.elements.get('history-list')).filter(element => element.className === 'history-item').length, 1);
@@ -78,7 +78,7 @@ test('annotation updates immediately re-evaluate the visible history note filter
   ui.elements.get('history-search').value = '更新备注'; await ui.elements.get('history-search').fire('input');
   const count = () => ui.descendants(ui.elements.get('history-list')).filter(element => element.className === 'history-item').length;
   assert.equal(count(), 0);
-  ui.event('annotation', { runId: record.id, revision: 1, runRevision: 1, annotation: { protected: false, note: '更新备注', tags: [], revision: 1 } });
+  ui.event('annotation', { runId: record.id, revision: 1, runRevision: 1, annotation: { protected: false, note: '更新备注', revision: 1 } });
   await waitFor(() => count() === 1);
   ui.event('annotation', { runId: record.id, revision: 2, runRevision: 2, annotation: null });
   await waitFor(() => count() === 0); ui.closeStream();

@@ -4,12 +4,12 @@ import { createLabTools } from '../ui/lab-tools.mjs';
 import { uiHarness } from './ui-harness.mjs';
 import { waitFor } from './helpers.mjs';
 
-async function summaryPanel(t, fail = () => false) {
+async function summaryPanel(t, fail = () => false, extra = {}) {
   const ui = await uiHarness({ bootstrap: { models: [], runs: [], defaultPrompt: 'test' } });
   await waitFor(() => !ui.elements.get('generate').disabled); t.after(() => ui.closeStream());
   const body = ui.elements.get('drawer-content'), value = { day: '2026-11-23', timeZone: 'UTC', knownRequests: 3, tokens: 1234567890,
     knownUsage: 2, unknownUsage: 1, providers: [{ provider: 'fixture', knownRequests: 3, tokens: 1234567890, unknownUsage: 1 }],
-    accounts: [{ provider: 'fixture', accountId: 'a', knownRequests: 2, tokens: 1234567890, unknownUsage: 0 }] };
+    accounts: [{ provider: 'fixture', accountId: 'a', knownRequests: 2, tokens: 1234567890, unknownUsage: 0 }], ...extra };
   let writes = 0;
   const tools = createLabTools({ document: ui.document, $: id => ui.elements.get(id), api: async path => {
     if (path === 'api/settings/save') { writes++; return {}; }
@@ -42,4 +42,22 @@ test('a failed usage refresh keeps the last observed totals and permits retry', 
   assert.ok(visible.some(node => node.tagName.toLowerCase() === 'strong' && node.textContent === '1,234,567,890'));
   assert.ok(visible.some(node => node.textContent.includes('合成的读取失败')));
   assert.equal(env.find('刷新今日用量').disabled, false);
+});
+
+test('daily usage exposes compact input, output, cache reads, writes and the covered hit rate', async t => {
+  const env = await summaryPanel(t, () => false, { tokenDetails: { input: 1000000, output: 479000, cacheRead: 800000, cacheWrite: 100000,
+    cacheWriteRequests: 1, inputRequests: 2, outputRequests: 2, cacheReadRequests: 2, cacheCoverageRequests: 2, cacheHitRate: .8 } });
+  const visible = env.ui.descendants(env.panel), labels = visible.map(node => node.textContent);
+  for (const label of ['输入', '输出', '缓存读取', '缓存写入', '命中率']) assert.ok(labels.includes(label), label);
+  for (const value of ['1M', '479K', '800K', '100K', '80.00%']) assert.ok(labels.includes(value), value);
+  assert.ok(labels.some(text => text.includes('2/3') && text.includes('缓存')));
+  assert.equal(env.writes(), 0);
+});
+
+test('missing cache detail stays unknown while an explicit cache miss displays zero', async t => {
+  const unknown = await summaryPanel(t), visible = unknown.ui.descendants(unknown.panel);
+  assert.ok(visible.some(node => node.textContent === '未提供'));
+  const zero = await summaryPanel(t, () => false, { knownRequests: 1, tokenDetails: { input: 1000, output: 20, cacheRead: 0, cacheWrite: null,
+    cacheWriteRequests: 0, inputRequests: 1, outputRequests: 1, cacheReadRequests: 1, cacheCoverageRequests: 1, cacheHitRate: 0 } });
+  assert.ok(zero.ui.descendants(zero.panel).some(node => node.textContent === '0.00%'));
 });

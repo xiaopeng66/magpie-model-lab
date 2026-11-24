@@ -103,8 +103,8 @@ test('today usage groups only issued requests by provider and pinned account', a
   await issue('fixture', 'a', 30); await issue('fixture', '', null); await issue('other', 'b', 40);
   await usage.reserve({ physicalRequestId: randomUUID(), runId: randomUUID(), provider: 'fixture', accountId: 'a' });
   const after = usage.summary(); assert.equal(after.knownRequests, 3); assert.equal(after.tokens, 70); assert.equal(after.unknownUsage, 1);
-  assert.deepEqual(after.providers, [{ provider: 'fixture', knownRequests: 2, tokens: 30, knownUsage: 1, unknownUsage: 1 }, { provider: 'other', knownRequests: 1, tokens: 40, knownUsage: 1, unknownUsage: 0 }]);
-  assert.deepEqual(after.accounts, [{ provider: 'fixture', accountId: 'a', knownRequests: 1, tokens: 30, knownUsage: 1, unknownUsage: 0 }, { provider: 'other', accountId: 'b', knownRequests: 1, tokens: 40, knownUsage: 1, unknownUsage: 0 }]);
+  assert.deepEqual(after.providers.map(({ tokenDetails, ...row }) => row), [{ provider: 'fixture', knownRequests: 2, tokens: 30, knownUsage: 1, unknownUsage: 1 }, { provider: 'other', knownRequests: 1, tokens: 40, knownUsage: 1, unknownUsage: 0 }]);
+  assert.deepEqual(after.accounts.map(({ tokenDetails, ...row }) => row), [{ provider: 'fixture', accountId: 'a', knownRequests: 1, tokens: 30, knownUsage: 1, unknownUsage: 0 }, { provider: 'other', accountId: 'b', knownRequests: 1, tokens: 40, knownUsage: 1, unknownUsage: 0 }]);
 });
 
 test('the retired manual cooldown bypass returns 404 while waiting status remains read-only', async t => {

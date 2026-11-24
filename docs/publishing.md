@@ -18,15 +18,19 @@ Magpie 的普通 npm 搜索当前主要筛选 OpenCode 供应商插件和 pi pro
 
 后续发行说明统一从 [版本日志数据](../ui/release-notes.mjs) 导出。GitHub 完整说明依次采用「更新内容、体验优化、验证、安装与升级、使用说明」；没有原始内容的栏目省略。插件使用同一份版本数据，只展示更新内容和体验优化，安装、验证及使用说明保留在 GitHub。日期按北京时间显示；新版本发布后回读 GitHub `published_at` 核对日期，历史版本保留原始发布时间。
 
-更新内容以该版本最终实现与上一正式版本的差异为依据，不记录开发中的多次调整、临时功能的增删或没有变化的功能。当前 1.0.6 以正式 1.0.5 为基准；历史版本继续保留各自发布时的实际更新，不把新版本功能补入旧说明。
+更新内容以该版本最终实现与上一正式版本的差异为依据，不记录开发中的多次调整、临时功能的增删或没有变化的功能。当前 1.0.7 以正式 1.0.6 为基准；1.0.6 的功能升级以正式 1.0.5 为基准。历史版本继续保留各自发布时的实际更新，不把新版本功能补入旧说明。
 
 先在数据中核对版本内容和已发布状态，再生成单个版本的说明文件：
 
 ```powershell
-node tools/release-notes.mjs 1.0.6 dist/release-notes-v1.0.6.md
+node tools/release-notes.mjs 1.0.7 dist/release-notes-v1.0.7.md
 ```
 
 导出器只写本地 Markdown，不执行发布或远端修改。本地开发条目不允许作为正式说明导出；准备已授权的正式发布时，在最终交付文件中设置版本日期和发行链接，去掉本地标记，完成检查后发布，再回读标签、资产、日期与内容。修改已有 GitHub 说明应先备份原正文，用 `--notes-file` 或 JSON 文件传入真实换行，并重新读取确认；标签、资产和原发布时间继续保留。
+
+## 1.0.7 正式更新
+
+本次正式标签和 Release 为 `v1.0.7`，独立资产为 `magpie-pelican-bench-1.0.7.zip` 与 `.zip.sha256`。详情直接填写备注，历史筛选移除标签输入与匹配；修复备注清空后的重连冲突、异常写入与保存确认。每日用量新增输入、输出、缓存读取、缓存写入和命中率，按接口提供的有效明细统计。结果卡片在普通和触屏布局下保持状态／日期与操作同一行，本地替换工具严格核验退出码并兼容 Windows PowerShell 的正常诊断输出。公开文件仍由白名单 ZIP 生成，排除内部规划、运行数据与验证截图。
 
 ## 1.0.6 正式更新
 
@@ -71,15 +75,15 @@ README.md  CHANGELOG.md  LICENSE  THIRD_PARTY_NOTICES.md  .gitignore
 
 开发工作目录还保留内部设计与验证材料。发布时使用白名单生成的 ZIP 解压目录作为 Git 仓库来源，避免直接把整个开发目录推上网。安装包不含运行数据、自动计划、参考库缓存、烟雾测试结果或内部验证报告。npm 包只包含运行文件与公开文档；ZIP 另含开发工具及测试。
 
-以下命令检查 1.0.6 并生成发布包，不执行安装或发布：
+以下命令检查 1.0.7 并生成发布包，不执行安装或发布：
 
 ```powershell
 node --test tests/*.test.mjs
 bun test ./tests
 bun tools/check-static.mjs
 npm pack --dry-run --json
-powershell -NoProfile -File tools/package.ps1 -OutputDirectory dist/release-1.0.6
-powershell -NoProfile -File tools/check-package.ps1 -Archive dist/release-1.0.6/magpie-pelican-bench-1.0.6.zip
+powershell -NoProfile -File tools/package.ps1 -OutputDirectory dist/release-1.0.7
+powershell -NoProfile -File tools/check-package.ps1 -Archive dist/release-1.0.7/magpie-pelican-bench-1.0.7.zip
 npm pack --pack-destination dist --ignore-scripts
 ```
 
@@ -102,7 +106,7 @@ gh release create v1.0.0 --repo xiaopeng66/magpie-model-lab --verify-tag --title
 
 随后在该 Release 上传验证后的 `magpie-pelican-bench-1.0.0.zip` 和 `.zip.sha256`。GitHub 自带源码压缩包也可安装，但独立 ZIP 直接包含插件根目录，便于本地添加。
 
-用户可以使用 `magpie plugin add github:xiaopeng66/magpie-model-lab` 安装默认分支，或附加 `#v1.0.6` 固定本次正式版。后续发布保留同一仓库和包名，并递增版本。
+用户可以使用 `magpie plugin add github:xiaopeng66/magpie-model-lab` 安装默认分支，或附加 `#v1.0.7` 固定本次正式版。后续发布保留同一仓库和包名，并递增版本。
 
 ## 验证发现
 

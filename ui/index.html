@@ -36,7 +36,7 @@
   </svg>
   <main class="app">
     <header class="app-header">
-      <div class="brand"><span class="brand-mark"><img src="icon.png" width="32" height="32" alt=""></span><h1>模型实验室</h1><span id="connection" class="connection" role="status" aria-label="正在连接" title="正在连接"></span><button id="release-notes" class="header-changelog" type="button" aria-haspopup="dialog" aria-label="查看 1.0.6 更新日志" title="更新日志"><span id="header-version">v1.0.6</span><span>更新日志</span></button></div>
+      <div class="brand"><span class="brand-mark"><img src="icon.png" width="32" height="32" alt=""></span><h1>模型实验室</h1><span id="connection" class="connection" role="status" aria-label="正在连接" title="正在连接"></span><button id="release-notes" class="header-changelog" type="button" aria-haspopup="dialog" aria-label="查看 1.0.7 更新日志" title="更新日志"><span id="header-version">v1.0.7</span><span>更新日志</span></button></div>
       <div class="header-actions app-actions">
         <div class="header-run-slot"><button id="generate" class="primary" type="button"><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg><span id="generate-label">开始生成</span></button></div>
         <button id="local-settings" class="header-settings" type="button" aria-haspopup="dialog" hidden><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg><span>本地设置</span></button>
@@ -107,7 +107,7 @@
               <p id="preset-help" class="help">保存超时、输出上限和并行数，下次一键载入。</p>
               <button id="manage-presets" type="button" aria-haspopup="dialog" hidden>添加 / 编辑方案</button>
             </div>
-            <p class="advanced-meta">Model Lab <span id="version">1.0.6</span></p></div>
+            <p class="advanced-meta">Model Lab <span id="version">1.0.7</span></p></div>
           </details>
           </section>
           <div id="form-error" class="form-error" role="alert" tabindex="-1" hidden></div>
@@ -157,7 +157,7 @@
           </div>
           <div id="history-search-row" class="phase-history-search" hidden>
             <label for="history-search">搜索历史</label><div class="search-field"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg><input id="history-search" type="search" placeholder="搜索历史" autocomplete="off" aria-describedby="history-search-help"></div>
-            <p id="history-search-help" class="help">可搜索模型、账号、备注和标签；其他条件使用“更多筛选”。</p>
+            <p id="history-search-help" class="help">可搜索模型、账号和备注；其他条件使用“更多筛选”。</p>
           </div>
           <div id="cleanup-panel" class="cleanup-panel" hidden>
             <div class="cleanup-actions"><div class="cleanup-cutoff"><label for="cleanup-before">此时间之前</label><div class="cleanup-row"><div class="date-field"><input id="cleanup-before" type="text" inputmode="numeric" placeholder="YYYY-MM-DD HH:mm" maxlength="16" aria-describedby="cleanup-hint" autocomplete="off" spellcheck="false"><button id="choose-date" class="icon-button" type="button" aria-label="选择截止日期" title="选择截止日期" aria-expanded="false" aria-controls="cleanup-calendar"><svg class="icon" aria-hidden="true"><use href="#i-calendar"/></svg></button><div id="cleanup-calendar" class="calendar" role="dialog" aria-label="选择截止日期" hidden><div class="calendar-heading"><button id="calendar-prev" class="icon-button" type="button" aria-label="上个月"><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg></button><span id="calendar-month" aria-live="polite"></span><button id="calendar-next" class="icon-button" type="button" aria-label="下个月"><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg></button></div><div class="calendar-week" aria-hidden="true"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div><div id="calendar-days" class="calendar-days"></div><div class="calendar-footer"><button id="calendar-today" class="quiet" type="button">今天</button><button id="calendar-close" class="quiet" type="button">关闭</button></div></div></div><button id="clear-before" type="button">清理此时间前</button></div></div><div class="cleanup-all"><span class="help">全部历史记录</span><button id="clear-all" class="danger" type="button">清除全部</button></div></div>

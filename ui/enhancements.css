@@ -78,6 +78,12 @@
 .phase-settings-feedback:has(> .help:empty):has(> button[hidden]) { display: none; }
 /* RYP: preset action buttons wrap within the existing compact drawer. */
 .phase-settings-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+/* RYP: notes remain directly editable in every result drawer. */
+.run-notes { display: grid; gap: var(--form-gap); min-width: 0; padding-top: var(--form-gap); border-top: 1px solid var(--line); }
+.run-notes-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; min-width: 0; }
+.run-notes-actions > button { min-height: 36px; max-width: 100%; white-space: normal; }
+.run-notes > .help { margin: 0; overflow-wrap: anywhere; }
+.run-notes > .help:empty { display: none; }
 /* RYP: runtime details stay in the drawer and use the existing help typography. */
 .phase-progress-body { margin-top: 10px; min-width: 0; }
 .phase-progress-sample { margin: 8px 0; }
@@ -224,6 +230,9 @@
 .phase-usage-metric:nth-child(3) { grid-area: missing; }
 .phase-usage-metric { display: grid; gap: 6px; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); }
 .phase-usage-metric strong { font-size: 18px; line-height: 1.4; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.phase-usage-tokens { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-width: 0; color: var(--muted); font-size: var(--text-body); }
+.phase-usage-token { display: inline-flex; align-items: baseline; flex: none; gap: 5px; white-space: nowrap; }
+.phase-usage-token strong { color: var(--fg); font-size: inherit; font-weight: 500; font-variant-numeric: tabular-nums; }
 .phase-usage-heading { margin: 4px 0 0; color: var(--fg); font-size: var(--text-label); }
 .phase-usage-row { display: grid; min-width: 0; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; }
 .phase-usage-line { display: grid; grid-template-columns: minmax(0, 1fr) minmax(60px, .32fr) minmax(105px, .65fr); align-items: start; gap: 12px; min-width: 0; padding: 12px 0; }
@@ -245,8 +254,6 @@
 details.phase-settings-group { min-width: 0; border: 1px solid var(--line); border-radius: 8px; }
 .phase-progress-sample + .phase-progress-sample { padding-top: 12px; border-top: 1px solid var(--line); }
 details.phase-settings-group > :not(summary) { margin: 12px; }
-details.phase-settings-group .editor-field textarea { width: 100%; }
-details.phase-settings-group > button { white-space: normal; text-align: left; }
 .phase-account-list { display: grid; gap: 8px; max-height: min(46dvh, 360px); min-width: 0; padding: 2px; overflow-y: auto; scrollbar-gutter: stable; }
 .phase-account-selection { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 2px; }
 .phase-tool-content .phase-account-select-all { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 10px; padding: 10px; border: 1px solid transparent; }

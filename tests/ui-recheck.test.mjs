@@ -27,16 +27,18 @@ test('a conflicting annotation disables saving until the current annotation is r
   const run = record('note'); let annotation = null, revision = 0, submitted;
   const ui = await uiHarness({ bootstrap: { models: [], runs: [run], defaultPrompt: 'test', notesAvailable: true, annotationsAvailable: true }, search: '?view=candy',
     detail: () => ({ ...run, annotation: { runId: run.id, revision, runRevision: revision, annotation } }),
-    annotations: input => { submitted = input; annotation = { note: input.note, tags: input.tags, revision: ++revision }; return { runId: run.id, revision, runRevision: revision, annotation }; } });
+    annotations: input => { submitted = input; annotation = { note: input.note, revision: ++revision }; return { runId: run.id, revision, runRevision: revision, annotation }; } });
   t.after(() => ui.closeStream()); await (await waitFor(() => find(ui, 'candy-results', '查看详情'))).fire('click');
   const note = ui.descendants(ui.elements.get('drawer-content'), 'textarea').find(control => control.getAttribute('aria-label') === '记录备注');
-  note.value = '保留的本地草稿'; await note.fire('input'); annotation = { note: '其他页面的备注', tags: [], revision: 1 }; revision = 1;
+  note.value = '保留的本地草稿'; await note.fire('input'); annotation = { note: '其他页面的备注', revision: 1 }; revision = 1;
   ui.event('annotation', { runId: run.id, revision, runRevision: revision, annotation });
-  await waitFor(() => ui.descendants(ui.elements.get('drawer-content')).some(control => /注释已更新/.test(control.textContent)));
-  const save = find(ui, 'drawer-content', '保存备注与标签'); assert.equal(save.disabled, true, 'A visible save button must not look available when its click is ignored');
-  await find(ui, 'drawer-content', '读取当前注释并保留草稿').fire('click');
+  await waitFor(() => ui.descendants(ui.elements.get('drawer-content')).some(control => /备注.*已更新/.test(control.textContent)));
+  const save = find(ui, 'drawer-content', '保存备注'); assert.equal(save.disabled, true, 'A visible save button must not look available when its click is ignored');
+  await find(ui, 'drawer-content', '读取当前备注并保留草稿').fire('click');
+  assert.ok(ui.descendants(ui.elements.get('drawer-content'), 'p').some(control => control.textContent === '当前备注：其他页面的备注'));
   assert.equal(note.value, '保留的本地草稿'); assert.equal(save.disabled, false); await save.fire('click');
   assert.equal(submitted.expectedRunRevision, 1); assert.equal(submitted.note, '保留的本地草稿');
+  assert.equal(ui.descendants(ui.elements.get('drawer-content'), 'p').some(control => control.textContent === '当前备注：其他页面的备注'), false, 'A successful save must retire the previously reviewed remote note');
 });
 
 test('account confirmation waits for the cache response before accepting an unavailable previous account', async t => {

@@ -191,6 +191,11 @@ export function createLabTools({ document, $, api, settingsUI, openDrawer, close
     const toolbar = node('div', undefined, 'phase-usage-toolbar'), date = node('p', '正在读取今日用量…', 'help'), refreshButton = button('刷新今日用量', refresh), feedback = status(body);
     toolbar.append(date, refreshButton); body.insertBefore(toolbar, summary); feedback.hidden = true;
     const format = value => value == null ? '—' : Number(value).toLocaleString('zh-CN');
+    const compact = value => {
+      if (value == null) return '未提供';
+      for (const [scale, unit] of [[1e9, 'B'], [1e6, 'M'], [1e3, 'K']]) if (value >= scale) return `${Number((value / scale).toFixed(2))}${unit}`;
+      return format(value);
+    };
     const usageRow = (label, value, account = false) => {
       const row = node('div', undefined, 'phase-usage-line' + (account ? ' phase-usage-account' : ''));
       const name = node('span', label, 'phase-usage-name'); name.title = label; row.append(name);
@@ -208,6 +213,20 @@ export function createLabTools({ document, $, api, settingsUI, openDrawer, close
         const metrics = node('div', undefined, 'phase-usage-grid');
         for (const [label, count] of [['今日请求', value.knownRequests], ['已知 Token', value.tokens], ['未返回 Token', value.unknownUsage || 0]]) { const metric = node('div', undefined, 'phase-usage-metric'); metric.append(node('span', label, 'help'), node('strong', format(count))); metrics.append(metric); }
         summary.append(metrics);
+        const details = value.tokenDetails || {}, tokenLine = node('div', undefined, 'phase-usage-tokens'); tokenLine.setAttribute('aria-label', '今日 Token 明细');
+        const fields = [['输入', details.input], ['输出', details.output], ['缓存读取', details.cacheRead]];
+        if (details.cacheWriteRequests > 0) fields.push(['缓存写入', details.cacheWrite]);
+        fields.push(['命中率', details.cacheHitRate]);
+        for (const [label, count] of fields) {
+          const item = node('span', undefined, 'phase-usage-token');
+          const text = label === '命中率' ? count == null ? '未提供' : `${(count * 100).toFixed(2)}%` : compact(count);
+          item.title = label === '命中率' ? '缓存读取 ÷ 含缓存输入，仅按有有效明细的请求计算' : `${label} ${count == null ? '未提供' : format(count) + ' Token'}${label === '输入' ? '（含缓存）' : ''}`;
+          item.setAttribute('aria-label', label === '命中率' ? `${label} ${text}；${item.title}` : item.title);
+          item.append(node('span', label), node('strong', text)); tokenLine.append(item);
+        }
+        summary.append(tokenLine);
+        const coverage = details.cacheCoverageRequests || 0;
+        if (value.knownRequests > 0) summary.append(node('p', `缓存明细覆盖 ${coverage}/${value.knownRequests} 次请求；输入含缓存，命中率按有效明细的 Token 数加权。`, 'help'));
         if (value.partial) summary.append(node('p', `今日统计从 ${new Date(value.coverageStartAt).toLocaleTimeString('zh-CN')} 开始，未覆盖此前的请求。`, 'help'));
         if (value.unknownUsage) summary.append(node('p', `${format(value.unknownUsage)} 次请求尚未提供完整 Token，已知 Token 只合计已返回的用量。`, 'help'));
         if (value.usageNeedsReview || value.possibleUnsent) summary.append(node('p', '部分请求的用量或发出状态需要核实，统计保留已观测值。', 'help'));
@@ -308,19 +327,19 @@ export function createLabTools({ document, $, api, settingsUI, openDrawer, close
 
   function openHistoryFilters() {
     const panel = opening('筛选历史', $('history-tools')), body = panel.content;
-    body.append(node('p', '组合条件筛选历史。模型和账号可填名称或标识，标签之间用逗号分隔。', 'help'));
+    body.append(node('p', '组合条件筛选历史。模型和账号可填名称或标识，也可按备注内容查找。', 'help'));
     const filters = readFilters(), filterBody = section(body, '筛选条件'), grid = columns(filterBody);
     const model = field(grid, '模型名称或标识', filters.model), account = field(grid, '账号名称或标识', filters.account), from = field(grid, '开始日期 · 含当天', dateDisplay(filters.from), 'date'), to = field(grid, '结束日期 · 不含当天', dateDisplay(filters.to), 'date');
     const result = select(grid, '结果或诊断', [['', '全部结果'], ['completed', '完成'], ['error', '失败'], ['cancelled', '取消'], ['interrupted', '中断'], ['match', '答案匹配'], ['mismatch', '答案不匹配'], ['review', '待复核'], ['timeout', '超时'], ['rate-limit', '限流'], ['authentication', '认证'], ['storage', '本地保存失败']], filters.result || '');
     const protectedValue = select(grid, '保护状态', [['', '全部'], ['yes', '受保护'], ['no', '未保护']], filters.protected === true ? 'yes' : filters.protected === false ? 'no' : '');
-    const tags = field(grid, '同时包含标签 · 逗号分隔', (filters.tags || []).join(', ')), note = field(grid, '备注包含文字', filters.note), filterStatus = status(filterBody), actions = node('div', undefined, 'phase-settings-actions'); filterBody.append(actions);
+    const note = field(grid, '备注包含文字', filters.note), filterStatus = status(filterBody), actions = node('div', undefined, 'phase-settings-actions'); filterBody.append(actions);
     actions.append(button('应用筛选', () => {
       try {
-        const value = { model: model.value, account: account.value, result: result.value, note: note.value, tags: tags.value.split(/[,，]/).map(value => value.trim()).filter(Boolean), from: dateValue(from), to: dateValue(to), ...(protectedValue.value ? { protected: protectedValue.value === 'yes' } : {}) };
+        const value = { model: model.value, account: account.value, result: result.value, note: note.value, from: dateValue(from), to: dateValue(to), ...(protectedValue.value ? { protected: protectedValue.value === 'yes' } : {}) };
         if (value.from && value.to && value.from >= value.to) throw Error('结束日期需晚于开始日期');
         setFilters(value); filterStatus.textContent = `${filteredIds().length} 条记录符合筛选，关闭面板即可查看。`;
       } catch (error) { filterStatus.textContent = error.message; }
-    }, 'primary'), button('清除筛选', () => { setFilters({}, true); for (const input of [model, account, from, to, tags, note]) input.value = ''; result.value = protectedValue.value = ''; filterStatus.textContent = '筛选已清除'; }));
+    }, 'primary'), button('清除筛选', () => { setFilters({}, true); for (const input of [model, account, from, to, note]) input.value = ''; result.value = protectedValue.value = ''; filterStatus.textContent = '筛选已清除'; }));
   }
   return { load(boot) { capabilities = boot; }, appendLocal, openHistoryFilters };
 }

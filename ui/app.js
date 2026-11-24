@@ -202,13 +202,13 @@ import { createChangelog } from './changelog.mjs';
     if (value.revision < (annotationRevisions.get(value.runId) ?? -1)) return;
     annotationRevisions.set(value.runId, value.revision);
     annotationLocalRevisions.set(value.runId, value.runRevision ?? value.annotation?.revision ?? 0);
-    if (value.annotation && (value.annotation.protected || value.annotation.note || value.annotation.tags?.length)) annotationByRun.set(value.runId, value.annotation); else annotationByRun.delete(value.runId);
+    if (value.annotation && (value.annotation.protected || value.annotation.note)) annotationByRun.set(value.runId, value.annotation); else annotationByRun.delete(value.runId);
     if (resultDetail?.id === value.runId) renderResultDetail();
     if (updateHistory) renderHistory();
   }
   function applyAnnotationProjection(value) {
     if (!value || !Array.isArray(value.scopeRunIds)) return;
-    for (const runId of value.scopeRunIds) applyAnnotation({ revision: value.revision, runId, annotation: value.byRunId?.[runId] || null }, false);
+    for (const runId of value.scopeRunIds) applyAnnotation({ revision: value.revision, runId, runRevision: value.runRevisions?.[runId] ?? value.byRunId?.[runId]?.revision ?? 0, annotation: value.byRunId?.[runId] || null }, false);
     renderHistory();
   }
 
@@ -430,7 +430,7 @@ import { createChangelog } from './changelog.mjs';
     text($('history-tools-label'), appliedConditions.length ? `筛选中 · ${appliedConditions.length}` : '更多筛选');
     $('history-tools').dataset.filtered = String(appliedConditions.length > 0);
     $('history-tools').setAttribute('aria-label', appliedConditions.length ? `更多筛选，已应用 ${appliedConditions.length} 项条件` : '更多筛选');
-    const conditionLabels = { model: '模型', account: '账号', from: '开始日期', to: '结束日期', result: '结果或诊断', protected: '保护状态', tags: '标签', note: '备注' };
+    const conditionLabels = { model: '模型', account: '账号', from: '开始日期', to: '结束日期', result: '结果或诊断', protected: '保护状态', note: '备注' };
     $('history-tools').title = appliedConditions.length ? `已应用：${appliedConditions.map(([key]) => conditionLabels[key] || key).join('、')}` : '设置更多历史筛选条件';
     const lightweightFilters = { ...historyFilters, text: $('history-search').value || '', ...(filter ? { kind: filter } : {}) };
     const batches = new Map(all.filter(group => (!sourceFilter || group.source === sourceFilter) && group.runs.some(run => historyMatches(run, annotationByRun.get(run.id), lightweightFilters))).map(group => [group.id, group]));
