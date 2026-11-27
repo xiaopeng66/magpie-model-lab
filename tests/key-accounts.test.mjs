@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { writeFile } from 'node:fs/promises';
+import { rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { temporary } from './helpers.mjs';
 
@@ -169,4 +169,25 @@ test('oversized and invalid provider files fail closed with a fixed safe warning
     const result = await env.read();
     assert.deepEqual(result.accounts, []); assert.ok(result.warning); assert.equal(result.warning.includes(primaryKey), false);
   }
+});
+
+test('credential metadata files reject symbolic links instead of following files outside the config directory', async t => {
+  const env = await fixture(t, [{ id: 'fixture', key: primaryKey }]);
+  const outside = join(await temporary(t), 'outside.json');
+  await writeFile(outside, JSON.stringify({ providers: [{ id: 'outside', key: spareKey }] }));
+  await rm(join(env.configDir, 'providers.json'));
+  await symlink(outside, join(env.configDir, 'providers.json'), 'file');
+  let result = await env.read();
+  assert.deepEqual(result.accounts, []);
+  assert.ok(result.warning);
+  assert.equal(JSON.stringify(result).includes(spareKey), false);
+
+  await rm(join(env.configDir, 'providers.json'));
+  await env.save([{ id: 'fixture', key: primaryKey, accountModels: { [shortID(primaryKey)]: ['fixture/model'] } }]);
+  const aliases = join(await temporary(t), 'aliases.json');
+  await writeFile(aliases, JSON.stringify({ modelIDs: { 'fixture/public': 'fixture/model' } }));
+  await symlink(aliases, join(env.configDir, 'settings.json'), 'file');
+  result = await env.read();
+  assert.deepEqual(result.accounts, []);
+  assert.ok(result.warning);
 });

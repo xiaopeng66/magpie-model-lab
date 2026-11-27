@@ -1,5 +1,13 @@
 # Third-party notices
 
+## gifenc 1.0.3
+
+`vendor/gifenc/gifenc.mjs` contains the MIT-licensed GIF encoder from
+[mattdesl/gifenc](https://github.com/mattdesl/gifenc), published on npm as
+`gifenc@1.0.3`. The accompanying license is in `vendor/gifenc/LICENSE.md`.
+The local renderer uses Node's built-in WebSocket, browser protocols and PNG
+decoder; no separate browser-automation or image-decoding package is installed.
+
 ## lmfpd-sdk 0.2.0
 
 `vendor/lmfpd-sdk/` is pinned from the npm SDK distribution committed in
@@ -18,7 +26,10 @@ shapes, dimensions and finite values, and runs a bounded scoring check before a
 snapshot can be installed. Malformed optional calibration bindings yield no
 confidence instead of throwing. Challenge generation, request templates and
 ranking formulas are unchanged. The upstream SDK version remains 0.2.0. The original
-runtime SHA-256 is `e8ad8d97eb8ed97cef084885e0e85274a7db28471c95dc1a46eda9919d4699f8`.
+runtime SHA-256 with CRLF line endings is
+`e8ad8d97eb8ed97cef084885e0e85274a7db28471c95dc1a46eda9919d4699f8`.
+The same pinned upstream file downloaded with LF line endings has SHA-256
+`3c17ea6400aa31e9b17d8e79977e8665832ac8c537946da4319af4ae40d1c368`.
 
 The gateway transport, queue, persistence and interface are implemented here.
 No React, React DOM, icon package, or reference plugin service is bundled.

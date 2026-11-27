@@ -7,9 +7,11 @@ import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
-const { values } = parseArgs({ options: { magpie: { type: "string" }, bun: { type: "string" }, output: { type: "string" }, seed: { type: "string" } } });
+const { values } = parseArgs({ options: { magpie: { type: "string" }, bun: { type: "string" }, output: { type: "string" }, seed: { type: "string" }, port: { type: "string" } } });
 assert.equal(process.platform, "win32", "This acceptance checks Windows job-object teardown");
 assert.ok(values.magpie && values.bun && values.output, "Pass --magpie, --bun and an existing --output directory");
+const port = values.port === undefined ? 3489 : Number(values.port);
+assert.ok(Number.isInteger(port) && port > 0 && port < 65536, "Pass a valid isolated --port");
 const root = await mkdtemp(join(tmpdir(), "model-lab-real-host-"));
 const configHome = join(root, "config"), cacheHome = join(root, "cache"), config = join(configHome, "magpie");
 const source = fileURLToPath(new URL("../", import.meta.url)).replace(/[\\/]$/, "");
@@ -17,7 +19,7 @@ const fixture = join(root, "plugin");
 const data = join(config, "magpie-pelican-bench", "runs"), output = resolve(values.output);
 await mkdir(config, { recursive: true }); await mkdir(cacheHome);
 const env = { ...process.env, XDG_CONFIG_HOME: configHome, XDG_CACHE_HOME: cacheHome, MAGPIE_BUN: resolve(values.bun), MAGPIE_PELICAN_BANK_SOURCE: "" };
-const report = { at: new Date().toISOString(), magpie: resolve(values.magpie), root, data, drainDelayMs: 300, cases: [], paidGenerationRequests: 0 };
+const report = { at: new Date().toISOString(), magpie: resolve(values.magpie), root, data, port, drainDelayMs: 300, cases: [], paidGenerationRequests: 0 };
 const exists = path => access(path).then(() => true, () => false);
 let command = 0;
 
@@ -64,7 +66,7 @@ try {
     await writeFile(favoritePath, JSON.stringify(favorites));
     report.seed = seed; report.isolatedAutomaticPlansDisabled = true;
   }
-  await writeFile(join(config, "plugins.json"), JSON.stringify({ plugins: [{ spec: fixture, off: true }] }));
+  await writeFile(join(config, "plugins.json"), JSON.stringify({ plugins: [{ spec: fixture, off: true, options: { port } }] }));
   for (let cycle = 1; cycle <= 2; cycle++) {
     await run(["plugin", "on", fixture]);
     await run(["plugin", "list", "--json"]);

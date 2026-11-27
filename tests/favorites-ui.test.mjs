@@ -14,6 +14,42 @@ const runs = [21, 29, null].map((answer, index) => ({ id: `run-${index}`, batchI
 const boot = { models: [model], runs, defaultPrompt: "animate", candyPrompt: "糖果题", candyVersion: "shape-choice-v1", candyAvailable: true, favoritesAvailable: true, fingerprintAvailable: true,
   favorites: { favorites: [favorite], plans: [plan], enabled: true, concurrency: 3 }, batchCleanup: true, version: "test", dataDir: "test-dir" };
 
+for (const cancel of ['button', 'Escape']) test(`canceling plan deletion with ${cancel} returns focus to the enabled delete control`, async t => {
+  const calls = [], ui = await uiHarness({ bootstrap: boot, favorites: async (path, body) => { calls.push([path, body]); return boot.favorites; } });
+  t.after(() => ui.closeStream());
+  await waitFor(() => ui.descendants(ui.elements.get('model-list'), 'input').length);
+  await ui.elements.get('favorites-tab').fire('click');
+  const settings = ui.descendants(ui.elements.get('favorite-candy-grid'), 'button').find(control => control.getAttribute('aria-label') === '设置 Fixture 的糖果计划');
+  await settings.fire('click');
+  const removal = ui.descendants(ui.elements.get('drawer-footer'), 'button').find(control => control.textContent === '删除计划');
+  removal.focus(); const completion = removal.fire('click');
+  assert.equal(ui.elements.get('confirm-dialog').open, true);
+  if (cancel === 'button') await ui.elements.get('confirm-cancel').fire('click');
+  else await ui.elements.get('confirm-dialog').fire('cancel');
+  await completion;
+  assert.equal(ui.elements.get('favorite-drawer').hidden, false);
+  assert.equal(removal.disabled, false);
+  assert.equal(ui.document.activeElement, removal);
+  assert.equal(calls.filter(([path]) => path === 'api/schedules/remove').length, 0);
+});
+
+test('composition Escape preserves the open plan and draft until an ordinary Escape', async t => {
+  const ui = await uiHarness({ bootstrap: boot }); t.after(() => ui.closeStream());
+  await waitFor(() => ui.descendants(ui.elements.get('model-list'), 'input').length);
+  await ui.elements.get('favorites-tab').fire('click');
+  const settings = ui.descendants(ui.elements.get('favorite-candy-grid'), 'button').find(control => control.getAttribute('aria-label') === '设置 Fixture 的糖果计划');
+  await settings.fire('click');
+  const field = ui.descendants(ui.elements.get('drawer-content'), 'input')[0]; field.value = '10:00'; field.focus();
+  for (const event of [{ key: 'Escape', isComposing: true }, { key: 'Escape', keyCode: 229 }]) {
+    await ui.elements.get('favorite-drawer').fire('keydown', event);
+    assert.equal(ui.elements.get('favorite-drawer').hidden, false);
+    assert.equal(field.isConnected, true); assert.equal(field.value, '10:00');
+  }
+  await ui.elements.get('favorite-drawer').fire('keydown', { key: 'Escape' });
+  assert.equal(ui.elements.get('favorite-drawer').hidden, true);
+  assert.equal(ui.document.activeElement, settings);
+});
+
 test("candy and favorites tabs disable global generation while history stays separate", async () => {
   const requests = [];
   const ui = await uiHarness({ bootstrap: boot, detail: id => ({ ...runs.find(run => run.id === id), content: "最终答案：21" }), create: body => { requests.push(body); return { runs: [{ ...runs[0], id: "new", batchId: "new" }] }; } });
@@ -55,6 +91,18 @@ test("each model toggle changes only its own plan and leaves the other enabled",
   const toggle = ui.descendants(ui.elements.get("favorite-candy-grid"), "button").find(e => e.attributes["aria-label"] === "暂停 Fixture 的糖果计划");
   await toggle.fire("click"); assert.equal(state.plans[0].enabled, false); assert.equal(state.plans[1].enabled, true);
   assert.equal(calls.filter(([path]) => path.endsWith("save")).length, 1);
+});
+
+test("the animation gallery keeps the plan entry but hides empty lanes and timing controls", async t => {
+  const ui = await uiHarness({ bootstrap: { ...boot, runs: [], favorites: { ...boot.favorites, plans: [] } } });
+  t.after(() => ui.closeStream());
+  await waitFor(() => ui.descendants(ui.elements.get("model-list"), "input").length);
+  await ui.elements.get("favorites-tab").fire("click");
+  await ui.elements.get("favorite-pelican").fire("click");
+  const gallery = ui.elements.get("favorite-results");
+  assert.equal(ui.elements.get("gallery-navigation").hidden, true);
+  assert.ok(ui.descendants(gallery, "button").some(control => control.getAttribute("aria-label") === "设置 Fixture 的动画计划"));
+  assert.equal(ui.descendants(gallery).filter(element => element.textContent === "暂无计划").length, 1);
 });
 
 test("automatic models paginate without a model ceiling and preserve cards during unrelated updates", async () => {

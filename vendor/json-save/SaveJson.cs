@@ -79,7 +79,9 @@ internal static class SaveJson
     {
         int parentId;
         if (args.Length != 2 || !int.TryParse(args[1], out parentId)) return 2;
-        if (!string.Equals(Path.GetExtension(args[0]), ".json", StringComparison.OrdinalIgnoreCase)) return 2;
+        string extension = Path.GetExtension(args[0]).ToLowerInvariant();
+        if (extension != ".json" && extension != ".gif") return 2;
+        string label = extension == ".gif" ? "GIF" : "JSON";
         try
         {
             Application.EnableVisualStyles();
@@ -87,10 +89,10 @@ internal static class SaveJson
             IntPtr parent = ResolveParentWindow(parentId);
             using (var picker = new SaveFileDialog())
             {
-                picker.Title = "保存 JSON";
-                picker.Filter = "JSON 文件 (*.json)|*.json";
+                picker.Title = "保存 " + label;
+                picker.Filter = label + " 文件 (*" + extension + ")|*" + extension;
                 picker.FileName = args[0];
-                picker.DefaultExt = "json";
+                picker.DefaultExt = extension.Substring(1);
                 picker.AddExtension = true;
                 picker.OverwritePrompt = true;
                 picker.CheckPathExists = true;

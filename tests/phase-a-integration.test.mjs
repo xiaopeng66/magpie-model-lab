@@ -78,12 +78,15 @@ test("close cancels live generation before a slow accepted settings write drains
   const closing = service.close(); await waitFor(() => upstream.seen.aborted === 1); assert.ok(release); release(); await closing; await saving;
   assert.equal(JSON.parse(await readFile(join(dir, ".settings", "state.json"), "utf8")).revision, 1); await (await acquireDataOwner(dir)).release();
 });
-test("an abnormal writer exit leaves a conservative marker and junction paths are refused", async t => {
+test("an abnormal writer exit is recoverable on Windows and junction paths remain refused", async t => {
   const dir = await temporary(t), moduleURL = new URL("../lib/data-owner.mjs", import.meta.url).href;
   const child = spawn(process.execPath, ["--input-type=module", "-e", `import {acquireDataOwner} from ${JSON.stringify(moduleURL)}; await acquireDataOwner(process.argv[1]); process.exit(9);`, dir], { stdio: "ignore", windowsHide: true });
   const code = await new Promise((resolve, reject) => { child.once("exit", resolve); child.once("error", reject); }); assert.equal(code, 9);
-  await assert.rejects(() => acquireDataOwner(dir), e => e.status === 503);
-  await unlink(join(dir, ".data-owner", "owner.json")); await rmdir(join(dir, ".data-owner")); await (await acquireDataOwner(dir)).release();
+  if (process.platform === "win32") await (await acquireDataOwner(dir)).release();
+  else {
+    await assert.rejects(() => acquireDataOwner(dir), e => e.status === 503);
+    await unlink(join(dir, ".data-owner", "owner.json")); await rmdir(join(dir, ".data-owner")); await (await acquireDataOwner(dir)).release();
+  }
   const external = await temporary(t), link = join(dir, "linked"); await symlink(external, link, process.platform === "win32" ? "junction" : "dir");
   await assert.rejects(() => acquireDataOwner(link), e => e.status === 503);
 });

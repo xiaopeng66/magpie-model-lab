@@ -107,6 +107,27 @@ test("009: the page visibly explains that automatic configuration is unavailable
   assert.equal(ui.elements.get("model-list").hidden, false);
 });
 
+test('missing favorites in an existing directory stay unavailable without recreating or replacing configuration', async t => {
+  const dir = await temporary(t), statePath = join(dir, '.favorites', 'state.json'), backupPath = join(dir, '.favorites', 'state.previous.json');
+  const store = new RunStore(dir); await store.init();
+  const run = await store.save({ id: randomUUID(), kind: 'candy', model: 'fixture/one', status: 'completed', createdAt: new Date().toISOString(),
+    content: '最终答案：21', candy: { verdict: 'match', answer: 21 } });
+  await mkdir(join(dir, '.favorites')); const backup = '{"retained":"recovery evidence"}'; await writeFile(backupPath, backup);
+  const upstream = await fakeGateway(t), service = await startServer({ port: 0, dataDir: dir, gatewayUrl: upstream.url }); t.after(() => service.close());
+  await service.ready;
+  const token = (await (await fetch(service.url)).text()).match(/name="pelican-token" content="([a-f0-9]+)"/)[1];
+  const headers = { 'x-pelican-token': token, 'content-type': 'application/json' };
+  const boot = await (await fetch(service.url + 'api/bootstrap', { headers })).json();
+  assert.equal(boot.favoritesAvailable, false); assert.equal(boot.configAvailable, false);
+  assert.equal(boot.favorites.readOnly, true); assert.equal(boot.favorites.enabled, false); assert.ok(boot.favoritesError);
+  assert.equal(boot.runs[0].id, run.id);
+  for (const [path, input] of [['favorites/save', { modelId: 'fixture/one' }], ['schedules/settings', { enabled: true }], ['config/export', {}]]) {
+    assert.equal((await fetch(service.url + 'api/' + path, { method: 'POST', headers, body: JSON.stringify(input) })).status, 503);
+  }
+  await assert.rejects(readFile(statePath), error => error.code === 'ENOENT');
+  assert.equal(await readFile(backupPath, 'utf8'), backup); assert.equal(upstream.seen.requests.length, 0);
+});
+
 test("009: a bound port cannot accept configuration writes before recovery finishes", async t => {
   const originalInit = Favorites.prototype.init;
   let release, started;

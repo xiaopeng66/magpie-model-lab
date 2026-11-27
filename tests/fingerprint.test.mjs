@@ -1,4 +1,5 @@
 import test from "node:test";
+import { createServer } from "node:http";
 import assert from "node:assert/strict";
 import { mkdir, writeFile, readFile, readdir, symlink, utimes } from "node:fs/promises";
 import { join } from "node:path";
@@ -54,6 +55,30 @@ test("strict sampling accepts complete JSON and records gateway route mismatches
   assert.equal(sample.state, "complete"); assert.equal(sample.count, 300); assert.equal(sample.provenance.mismatch, true); assert.equal(sample.provenance.model, "fixture/replaced");
 });
 
+test("fingerprint Chat JSON and SSE select candidate zero without mixing other candidate output", async t => {
+  const expected = numberReply(300);
+  for (const json of [false, true]) for (const reversed of [false, true]) {
+    const upstream = await fingerprintGateway(t, { handler: ({ res, chunk }) => {
+      res.writeHead(200, { "content-type": json ? "application/json" : "text/event-stream" });
+      const key = json ? "message" : "delta";
+      const choices = [
+        { index: 0, [key]: { content: expected, reasoning_content: "零" }, finish_reason: "stop" },
+        { index: 1, [key]: { content: numberReply(320), reasoning_content: "不要采用此候选" }, finish_reason: "length" },
+      ];
+      if (json) res.end(JSON.stringify({ choices: reversed ? choices.reverse() : choices }));
+      else {
+        chunk({ choices: [{ index: 1, delta: { content: "999, ", reasoning_content: "忽略" }, finish_reason: "length" }] });
+        chunk({ choices: reversed ? choices.reverse() : choices });
+        res.end("data: [DONE]\n\n");
+      }
+    } });
+    const sample = await sampling.sampleFingerprint(new Gateway({ url: upstream.url }),
+      { model: "fixture/chat", api: "chat_completions", maxTokens: 32000, strict: true }, challenge);
+    assert.equal(sample.state, "complete", sample.error); assert.equal(sample.raw_text, expected);
+    assert.equal(sample.count, 300); assert.equal(sample.reasoningChars, 1); assert.equal(sample.finishReason, "stop");
+  }
+});
+
 test("cached account labels are projected without credentials or balances", async t => {
   const upstream = await fingerprintGateway(t); const gateway = new Gateway({ url: upstream.url });
   assert.equal(typeof gateway.accounts, "function", "Cached account projection is missing");
@@ -76,6 +101,114 @@ test("reference data loads only explicitly, preserves snapshots and keeps the pr
   assert.equal(bank.status().state, "ready"); assert.equal((await bank.load()).meta.sha256, loaded.meta.sha256);
   const restored = new banks.FingerprintBank({ dir: join(dir, "bank"), source: upstream.url + "/data/" });
   await restored.init(); assert.equal((await restored.load()).meta.sha256, loaded.meta.sha256); assert.equal(upstream.seen.downloads.length, 3);
+});
+
+test("upstream update checks compare metadata without downloading chunks or replacing the current snapshot", async t => {
+  const dir = await temporary(t), original = referenceFixture("current", true), upstream = await fingerprintGateway(t, { bank: original });
+  const bank = new banks.FingerprintBank({ dir: join(dir, "bank"), source: upstream.url + "/data/" });
+  await bank.load();
+  upstream.server.removeAllListeners("request");
+  const changed = referenceFixture("updated", true); let published = changed.bundle;
+  const seen = [];
+  upstream.server.on("request", (req, res) => {
+    seen.push(req.url);
+    if (req.url === "/data/bundle.json") res.end(published);
+    else { res.writeHead(500); res.end(); }
+  });
+  const checked = await bank.checkForUpdate({ force: true });
+  assert.equal(checked.updateAvailable, true, "A changed detector must show an update even when its model count is unchanged");
+  assert.deepEqual(seen, ["/data/bundle.json"], "A badge check downloads metadata only");
+  assert.equal(bank.status().meta.builtAt, "current", "Checking for an update must not replace the active bank");
+  const renamed = JSON.parse(changed.bundle); renamed.models[0].display_name = "Reference Alpha"; published = Buffer.from(JSON.stringify(renamed));
+  assert.equal((await bank.checkForUpdate({ force: true })).updateAvailable, true, "Model metadata changes remain visible even with the same detector and model count");
+  const stampOnly = JSON.parse(original.bundle); stampOnly.built_at = "stamp-only update"; published = Buffer.from(JSON.stringify(stampOnly));
+  assert.equal((await bank.checkForUpdate({ force: true })).updateAvailable, false, "A build-date-only change does not claim a useful update");
+  published = Buffer.from("unavailable");
+  const failedCheck = await bank.checkForUpdate({ force: true });
+  assert.equal(failedCheck.updateAvailable, false, "A transient check failure leaves the last known update state alone");
+  assert.ok(failedCheck.lastCheckedAt > 0, "A completed check records when it ran");
+  assert.match(failedCheck.checkError, /参考库|JSON|unavailable/);
+  assert.equal(seen.filter(path => path === "/data/chunks/fixture.zst").length, 0, "Update checks never download detector chunks");
+  await bank.close();
+});
+
+test("refresh skips a stale first mirror and installs the exact snapshot advertised by the update check", async t => {
+  const dir = await temporary(t), old = referenceFixture("2026-11-25T00:00:00Z", true), current = referenceFixture("2026-11-26T00:00:00Z", true), latest = referenceFixture("2026-11-27T00:00:00Z", true);
+  const requests = [], server = createServer((req, res) => {
+    requests.push(req.url);
+    const fixture = req.url.startsWith("/old/") ? old : latest;
+    if (req.url.endsWith("bundle.json")) res.end(fixture.bundle);
+    else if (req.url.endsWith("fixture.zst")) res.end(fixture.compressed);
+    else { res.writeHead(404); res.end(); }
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`, bank = new banks.FingerprintBank({ dir: join(dir, "bank"), source: [`${base}/old/`, `${base}/new/`] });
+  t.after(async () => { await bank.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  await bank.init(); bank.current = await bank.install(current.cache, false);
+  const checked = await bank.checkForUpdate({ force: true });
+  assert.equal(checked.updateAvailable, true); assert.equal(checked.meta.builtAt, "2026-11-26T00:00:00Z");
+  const refreshed = await bank.refresh();
+  assert.equal(refreshed.meta.builtAt, "2026-11-27T00:00:00Z");
+  assert.deepEqual(await bank.snapshotBytes(refreshed.meta.sha256), latest.cache);
+  assert.equal(bank.status().updateAvailable, false);
+  assert.deepEqual(requests.filter(path => path.endsWith("bundle.json")), ["/old/bundle.json", "/new/bundle.json", "/old/bundle.json", "/new/bundle.json"]);
+});
+
+test("a changed advertised manifest or only older mirrors cannot overwrite the current reference", async t => {
+  const dir = await temporary(t), originalFetch = globalThis.fetch;
+  const current = referenceFixture("2026-11-26T00:00:00Z", true), latest = referenceFixture("2026-11-27T00:00:00Z", true), alternate = referenceFixture("2026-11-28T00:00:00Z", true);
+  let published = latest;
+  globalThis.fetch = async input => new Response(String(input).endsWith("bundle.json") ? published.bundle : published.compressed);
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const bank = new banks.FingerprintBank({ dir, source: "http://fixture.invalid/" }); t.after(() => bank.close());
+  await bank.init(); bank.current = await bank.install(current.cache); const pointer = await readFile(join(dir, "current.json"));
+  assert.equal((await bank.checkForUpdate({ force: true })).updateAvailable, true);
+  published = alternate;
+  await assert.rejects(bank.refresh(), /清单|检查|变化/);
+  assert.deepEqual(await readFile(join(dir, "current.json")), pointer); assert.equal(bank.status().updateAvailable, true);
+  published = referenceFixture("2026-11-25T00:00:00Z", true);
+  await assert.rejects(bank.refresh(), /旧|版本|检查|清单/);
+  assert.deepEqual(await readFile(join(dir, "current.json")), pointer);
+});
+
+test("failed reference checks retry after five minutes while successful checks keep the twelve hour interval", async t => {
+  const dir = await temporary(t), originalFetch = globalThis.fetch, originalNow = Date.now, fixture = referenceFixture("2026-11-26T00:00:00Z", true);
+  let clock = originalNow(), unavailable = true, calls = 0;
+  Date.now = () => clock;
+  globalThis.fetch = async () => { calls++; return unavailable ? new Response("offline", { status: 503 }) : new Response(fixture.bundle); };
+  t.after(() => { globalThis.fetch = originalFetch; Date.now = originalNow; });
+  const bank = new banks.FingerprintBank({ dir, source: "http://fixture.invalid/" }); t.after(() => bank.close());
+  await bank.init(); bank.current = await bank.install(fixture.cache);
+  await bank.checkForUpdate(); assert.equal(calls, 1); assert.equal(bank.status().lastSuccessfulCheckAt, 0); assert.ok(bank.status().checkError);
+  clock += 4 * 60 * 1000; await bank.checkForUpdate(); assert.equal(calls, 1);
+  clock += 60 * 1000; unavailable = false; await bank.checkForUpdate(); assert.equal(calls, 2);
+  assert.equal(bank.status().lastSuccessfulCheckAt, clock); assert.equal(bank.status().checkError, "");
+  clock += 6 * 60 * 60 * 1000; await bank.checkForUpdate(); assert.equal(calls, 2);
+  clock += 6 * 60 * 60 * 1000; await bank.checkForUpdate(); assert.equal(calls, 3);
+});
+
+test("a mirror with unchanged metadata cannot hide a useful update with the same build date", async t => {
+  const dir = await temporary(t), originalFetch = globalThis.fetch, current = referenceFixture("2026-11-26T00:00:00Z", true);
+  const changed = JSON.parse(current.bundle); changed.models[0].display_name = "New reference name";
+  globalThis.fetch = async input => new Response(String(input).includes("/changed/") ? JSON.stringify(changed) : current.bundle);
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const bank = new banks.FingerprintBank({ dir, source: ["http://fixture.invalid/current/", "http://fixture.invalid/changed/"] }); t.after(() => bank.close());
+  await bank.init(); bank.current = await bank.install(current.cache);
+  assert.equal((await bank.checkForUpdate({ force: true })).updateAvailable, true);
+});
+
+test("a failed refresh rechecks changed metadata after five minutes without losing the last success time", async t => {
+  const dir = await temporary(t), originalFetch = globalThis.fetch, originalNow = Date.now, current = referenceFixture("2026-11-26T00:00:00Z", true);
+  let clock = originalNow(), published = referenceFixture("2026-11-27T00:00:00Z", true), requests = 0;
+  Date.now = () => clock;
+  globalThis.fetch = async input => { requests++; return new Response(String(input).endsWith("bundle.json") ? published.bundle : published.compressed); };
+  t.after(() => { globalThis.fetch = originalFetch; Date.now = originalNow; });
+  const bank = new banks.FingerprintBank({ dir, source: "http://fixture.invalid/" }); t.after(() => bank.close());
+  await bank.init(); bank.current = await bank.install(current.cache); await bank.checkForUpdate(); const success = bank.status().lastSuccessfulCheckAt;
+  published = referenceFixture("2026-11-28T00:00:00Z", true); await assert.rejects(bank.refresh(), /清单/);
+  assert.equal(bank.status().lastSuccessfulCheckAt, success);
+  const before = requests; clock += 5 * 60 * 1000; await bank.checkForUpdate(); assert.equal(requests, before + 1);
+  assert.equal((await bank.refresh()).meta.builtAt, "2026-11-28T00:00:00Z");
 });
 
 test("reference refresh rejects digest mismatches and chunk paths outside its configured source", async t => {

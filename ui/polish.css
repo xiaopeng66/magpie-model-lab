@@ -106,7 +106,6 @@ input[type="checkbox"] { width: 14px; height: 14px; }
   margin: 0; padding: 12px 18px; max-width: min(520px, calc(100% - 32px)); border-radius: 9px;
   background: var(--fg); color: var(--surface); font-size: 13px; box-shadow: var(--shadow-hover);
 }
-.animation-gallery { display: grid; grid-auto-rows: 1fr; }
 .animation-row { grid-template-columns: 180px minmax(0, 1fr); padding: 14px; gap: 16px; }
 .animation-slot { flex-basis: 200px; }
 .animation-slot .result-card { padding: 10px; }
@@ -114,8 +113,11 @@ input[type="checkbox"] { width: 14px; height: 14px; }
 .animation-slot-body { display: flex; flex: 1; flex-direction: column; }
 .animation-slot-body > :is(.result-card, .animation-placeholder) { flex: 1; min-height: 232px; }
 .animation-lane { min-height: 242px; overflow-x: auto; }
-/* An empty lane reserves its time label, result body and lane padding. */
-.animation-lane:not(:has(.animation-slot)) { min-height: calc(232px + var(--text-small) * 1.5 + 19px); }
+.animation-row[data-empty="true"] { align-items: center; }
+.animation-row[data-empty="true"] .animation-model { padding-top: 0; }
+.animation-row[data-empty="true"] .card-schedule { margin-top: 4px; padding: 6px 0 0; border-bottom: 0; }
+.animation-lane:not(:has(.animation-slot)) { min-height: 0; padding: 0; overflow: visible; }
+.animation-no-plan { padding: 0; overflow-wrap: anywhere; }
 .animation-lane:has(.animation-slot)::after { flex-basis: max(0px, calc(100% - 210px)); }
 .animation-placeholder { height: 200px; }
 .error-summary { position: absolute; inset: 0; z-index: 1; display: grid; place-content: center; gap: 5px; padding: 10px; background: var(--surface-soft); text-align: center; color: var(--error); font-size: 11px; }

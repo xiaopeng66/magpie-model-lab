@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { mergeUsage, tokenUsage } from '../lib/usage.mjs';
+import { mergeUsage, sumUsage, tokenUsage, usageBreakdown } from '../lib/usage.mjs';
 import { UsageLedger } from '../lib/usage-ledger.mjs';
 import { Gateway } from '../lib/gateway.mjs';
 import { sampleFingerprint } from '../lib/fingerprint-sample.mjs';
@@ -36,6 +36,22 @@ for (const [label, usage, total] of [
 test('sanitizing a malformed native cache count does not turn unknown total usage into a smaller total', () => {
   const usage = mergeUsage(null, { input_tokens: 10, output_tokens: 4, cache_read_input_tokens: -1 });
   assert.equal(tokenUsage({ usage }).total, null);
+});
+
+test('fingerprint aggregation retains unknown native cache fields in any sample order', () => {
+  for (const field of ['cache_read_input_tokens', 'cache_creation_input_tokens']) {
+    const samples = [
+      { usage: mergeUsage(null, { input_tokens: 10, output_tokens: 4, [field]: -1 }) },
+      { usage: { input_tokens: 10, output_tokens: 4, [field]: 5, total_tokens: 19 } },
+      { usage: { input_tokens: 10, output_tokens: 4, [field]: 5, total_tokens: 19 } },
+    ];
+    for (const ordered of [samples, [...samples].reverse()]) {
+      const usage = sumUsage(ordered);
+      assert.equal(usage[field], null); assert.equal(usageBreakdown(usage).input, null);
+      assert.deepEqual(tokenUsage({ kind: 'fingerprint', samples: ordered }),
+        { reasoning: null, output: 12, total: 38, partial: ['total'] });
+    }
+  }
 });
 
 test('native cache input from a start frame survives later output-only frames without being added twice', async t => {

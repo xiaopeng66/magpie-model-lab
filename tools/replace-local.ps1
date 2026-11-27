@@ -103,7 +103,7 @@ function Move-LabDirectory($Entry, [string]$Source, [string]$Destination) {
     if ($full -notin @($Entry.target,$Entry.stage,$Entry.backup,$Entry.failed) -or -not [string]::Equals([IO.Path]::GetDirectoryName($full), $Entry.parent, [StringComparison]::OrdinalIgnoreCase)) { throw "Unsafe directory move: $full" }
   }
   if (Test-Path -LiteralPath $Destination) { throw "Move destination already exists: $Destination" }
-  Move-Item -LiteralPath $Source -Destination $Destination -ErrorAction Stop
+  Move-Item -LiteralPath $Source -Destination $Destination -ErrorAction Stop | Out-Null
 }
 function Remove-LabStaging($Entry, [string]$Path) {
   if (-not (Test-Path -LiteralPath $Path)) { return }
@@ -111,6 +111,17 @@ function Remove-LabStaging($Entry, [string]$Path) {
   if ($full -notin @($Entry.stage,$Entry.failed)) { throw "Unsafe staging cleanup: $full" }
   Get-LabDirectoryInventory $full | Out-Null
   Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction Stop
+}
+function Remove-LabOldBackups($Entry, [string[]]$CurrentBackups) {
+  $current = @($CurrentBackups | ForEach-Object { Assert-LabPathWithin $_ $Entry.parent })
+  $older = @(Get-ChildItem -LiteralPath $Entry.parent -Directory -Force -ErrorAction Stop |
+    Where-Object { $_.Name -match '^\.magpie-model-lab-backup-[a-f0-9]{32}$' -and -not ($current -contains [IO.Path]::GetFullPath($_.FullName)) } |
+    Sort-Object LastWriteTimeUtc -Descending | Select-Object -Skip 1)
+  foreach ($item in $older) {
+    $full = Assert-LabPathWithin $item.FullName $Entry.parent
+    Get-LabDirectoryInventory $full | Out-Null
+    Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction Stop
+  }
 }
 function Wait-LabPortRelease([int]$Port) {
   if (-not $Port) { return }
@@ -132,12 +143,150 @@ function Invoke-LabPluginCommand([string]$MagpieExe, [string]$PluginSpec, [strin
     if ($null -eq $global:LASTEXITCODE -or $global:LASTEXITCODE -ne 0) { throw "Plugin $Mode command failed" }
   } finally { $ErrorActionPreference = $previousErrorPreference }
 }
-function Invoke-LabLocalReplacement {
+function Get-LabUpdatePaths([string[]]$Targets) {
+  if (-not $Targets.Count) { throw 'No replacement targets' }
+  $full = @($Targets | ForEach-Object { Assert-LabPlainPath $_ -AllowMissing } | Sort-Object)
+  if (@($full | Select-Object -Unique).Count -ne $full.Count) { throw 'Duplicate replacement targets' }
+  foreach ($target in $full) {
+    Assert-LabPlainPath ([IO.Path]::GetDirectoryName($target)) | Out-Null
+    foreach ($other in $full) { if ($target.StartsWith($other + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Replacement targets overlap' } }
+  }
+  $hash = [Security.Cryptography.SHA256]::Create()
+  try {
+    $key = [BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes(($full -join "`n").ToLowerInvariant()))).Replace('-','').ToLowerInvariant()
+  } finally { $hash.Dispose() }
+  # Parent locks also serialize backup pruning for different targets sharing that parent.
+  $parents = @($full | ForEach-Object { [IO.Path]::GetDirectoryName($_) } | Sort-Object -Unique)
+  return [pscustomobject]@{ targets = $full; journal = (Join-Path ([IO.Path]::GetDirectoryName($full[0])) ('.magpie-model-lab-update-' + $key + '.json')); locks = @($parents | ForEach-Object { Join-Path $_ '.magpie-model-lab-update.lock' }); references = @($parents | ForEach-Object { Join-Path $_ '.magpie-model-lab-update.pending.json' }) }
+}
+function Open-LabUpdateLocks($Paths) {
+  $handles = @()
+  try {
+    foreach ($path in $Paths.locks) {
+      Assert-LabPlainPath $path -AllowMissing | Out-Null
+      try { $handles += [IO.File]::Open($path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
+      catch { throw 'Another local replacement is in progress or its lock cannot be opened' }
+    }
+    foreach ($path in $Paths.references) {
+      Assert-LabPlainPath $path -AllowMissing | Out-Null
+      if (-not (Test-Path -LiteralPath $path)) { continue }
+      $info = Get-Item -LiteralPath $path -Force
+      if ($info.PSIsContainer -or $info.Length -gt 65536) { throw 'Invalid pending update reference; preserved without changes' }
+      $reference = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($reference.schema -ne 'magpie-local-update-reference-v1' -or -not ($reference.journal -is [string]) -or -not ($reference.targets -is [array]) -or -not $reference.targets.Count -or @($reference.targets | Where-Object { -not ($_ -is [string]) -or -not $_ }).Count) { throw 'Invalid pending update reference; preserved without changes' }
+      $pending = Assert-LabPlainPath $reference.journal -AllowMissing
+      $recorded = Get-LabUpdatePaths $reference.targets
+      if ($recorded.journal -ne $pending -or $path -notin $recorded.references) { throw 'Pending update reference target mismatch; preserved without changes' }
+      if (-not (Test-Path -LiteralPath $pending)) { throw 'The pending update journal is missing; preserved without changes' }
+      if ($pending -ne $Paths.journal) { throw "An interrupted replacement must be recovered with its complete original target set first: $pending" }
+    }
+  } catch { foreach ($handle in $handles) { $handle.Dispose() }; throw }
+  return ,$handles
+}
+function Write-LabUpdateReferences($Paths) {
+  foreach ($path in $Paths.references) { Write-LabUpdateJournal $path ([ordered]@{ schema = 'magpie-local-update-reference-v1'; journal = $Paths.journal; targets = $Paths.targets }) }
+}
+function Complete-LabUpdateJournal($Paths) {
+  # Clear references before their journal; interruption here already leaves a verified complete version.
+  foreach ($path in $Paths.references) {
+    Assert-LabPlainPath $path -AllowMissing | Out-Null
+    if (Test-Path -LiteralPath $path) {
+      $info = Get-Item -LiteralPath $path -Force
+      if ($info.PSIsContainer -or $info.Length -gt 65536) { throw 'Pending update reference changed during cleanup' }
+      $reference = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($reference.schema -ne 'magpie-local-update-reference-v1' -or $reference.journal -ne $Paths.journal) { throw 'Pending update reference changed during cleanup' }
+      Remove-Item -LiteralPath $path -Force
+    }
+  }
+  Assert-LabPlainPath $Paths.journal | Out-Null
+  Remove-Item -LiteralPath $Paths.journal -Force
+}
+function Write-LabUpdateJournal([string]$Path, $Journal) {
+  Assert-LabPlainPath $Path -AllowMissing | Out-Null
+  $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($Journal | ConvertTo-Json -Depth 12 -Compress))
+  if ($bytes.Length -gt 8MB) { throw 'Update journal is too large' }
+  $temp = $Path + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
+  try {
+    $stream = [IO.File]::Open($temp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+    if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($temp, $Path, [NullString]::Value) } else { [IO.File]::Move($temp, $Path) }
+  } finally { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force } }
+}
+function ConvertTo-LabInventory($Value) {
+  if ($null -eq $Value -or -not ($Value -is [System.Management.Automation.PSCustomObject])) { throw 'Invalid journal inventory' }
+  $result = @{}
+  foreach ($property in $Value.PSObject.Properties) {
+    Assert-LabRelativePath $property.Name
+    if ($property.Value -notmatch '^[a-fA-F0-9]{64}$' -or $result.ContainsKey($property.Name)) { throw 'Invalid journal hash' }
+    $result[$property.Name] = $property.Value
+  }
+  return ,$result
+}
+function Repair-LabReplacementJournal($Paths, [string]$MagpieExe, [string]$PluginSpec, [int]$Port) {
+  if (-not (Test-Path -LiteralPath $Paths.journal)) { return [ordered]@{ recovered = $false } }
+  $path = Assert-LabPlainPath $Paths.journal; $info = Get-Item -LiteralPath $path -Force
+  if ($info.PSIsContainer -or $info.Length -gt 8MB) { throw 'Invalid update journal; preserved without changes' }
+  $journal = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+  if ($journal.schema -ne 'magpie-local-update-v1' -or $journal.phase -notin @('prepared','switching','activating','committed','rolling-back','recovering-old') -or @($journal.entries).Count -ne $Paths.targets.Count) { throw 'Invalid update journal; preserved without changes' }
+  $seen = @{}; $entries = @()
+  foreach ($entry in $journal.entries) {
+    $target = Assert-LabPlainPath $entry.target -AllowMissing; $parent = [IO.Path]::GetDirectoryName($target)
+    if ($target -notin $Paths.targets -or $seen.ContainsKey($target) -or $entry.parent -ne $parent -or [IO.Path]::GetFileName($entry.backup) -notmatch '^\.magpie-model-lab-backup-([a-f0-9]{32})$') { throw 'Update journal target mismatch; preserved without changes' }
+    $id = $Matches[1]; $seen[$target] = $true
+    foreach ($kind in @('backup','stage','failed')) {
+      $expected = Join-Path $parent ('.magpie-model-lab-' + $kind + '-' + $id)
+      if ($entry.$kind -ne $expected) { throw 'Update journal path mismatch; preserved without changes' }
+      Assert-LabPathWithin $entry.$kind $parent | Out-Null
+    }
+    $entries += [pscustomobject]@{ target = $target; parent = $parent; backup = $entry.backup; stage = $entry.stage; failed = $entry.failed; original = (ConvertTo-LabInventory $entry.original); prepared = (ConvertTo-LabInventory $entry.prepared); state = '' }
+  }
+  Write-LabUpdateReferences $Paths
+  Invoke-LabPluginCommand $MagpieExe $PluginSpec 'off'; Wait-LabPortRelease $Port
+  $keepNew = $journal.phase -in @('activating','committed')
+  # Validate every directory before the first move, preserving any unrecognized external edits.
+  foreach ($entry in $entries) {
+    foreach ($kind in @('backup','stage','failed')) { if (Test-Path -LiteralPath $entry.$kind) { $expected = if ($kind -eq 'backup') { $entry.original } else { $entry.prepared }; Assert-LabInventory (Get-LabDirectoryInventory $entry.$kind) $expected } }
+    if (Test-Path -LiteralPath $entry.target) {
+      $actual = Get-LabDirectoryInventory $entry.target
+      if ($keepNew) { Assert-LabInventory $actual $entry.prepared; $entry.state = 'new' }
+      else {
+        try { Assert-LabInventory $actual $entry.original; $entry.state = 'old' }
+        catch { Assert-LabInventory $actual $entry.prepared; $entry.state = 'new' }
+      }
+    } else { $entry.state = 'missing' }
+    if ($keepNew) { if ($entry.state -ne 'new') { throw 'An activated update no longer matches its verified new files; preserved without changes' } }
+    elseif ($entry.state -ne 'old' -and -not (Test-Path -LiteralPath $entry.backup)) { throw 'The original backup is missing; preserved without changes' }
+    if (-not $keepNew -and $entry.state -eq 'new' -and (Test-Path -LiteralPath $entry.failed)) { throw 'Ambiguous recovery directories; preserved without changes' }
+  }
+  if (-not $keepNew) {
+    $journal.phase = 'recovering-old'; Write-LabUpdateJournal $path $journal
+    for ($index = $entries.Count - 1; $index -ge 0; $index--) {
+      $entry = $entries[$index]
+      if ($entry.state -eq 'old') { continue }
+      if ($entry.state -eq 'new') { Move-LabDirectory $entry $entry.target $entry.failed }
+      Move-LabDirectory $entry $entry.backup $entry.target
+    }
+  }
+  foreach ($entry in $entries) {
+    $expected = if ($keepNew) { $entry.prepared } else { $entry.original }
+    Assert-LabInventory (Get-LabDirectoryInventory $entry.target) $expected
+    Remove-LabStaging $entry $entry.stage; Remove-LabStaging $entry $entry.failed
+  }
+  Complete-LabUpdateJournal $Paths
+  return [ordered]@{ recovered = $true; version = $(if ($keepNew) { 'new' } else { 'old' }); keptDisabled = $true }
+}
+function Repair-LabLocalReplacement {
+  [CmdletBinding()]
+  param([Parameter(Mandatory=$true)][string[]]$Targets, [Parameter(Mandatory=$true)][string]$MagpieExe, [Parameter(Mandatory=$true)][string]$PluginSpec, [ValidateRange(0,65535)][int]$Port = 3489)
+  $ErrorActionPreference = 'Stop'; $paths = Get-LabUpdatePaths $Targets; $handles = Open-LabUpdateLocks $paths
+  try { return Repair-LabReplacementJournal $paths $MagpieExe $PluginSpec $Port } finally { foreach ($handle in $handles) { $handle.Dispose() } }
+}
+function Invoke-LabLocalReplacementCore {
   [CmdletBinding()]
   param([Parameter(Mandatory=$true)][string]$Archive, [Parameter(Mandatory=$true)][string]$SourceRoot,
     [Parameter(Mandatory=$true)]$Manifest, [Parameter(Mandatory=$true)][string[]]$Targets,
     [Parameter(Mandatory=$true)][string]$MagpieExe, [Parameter(Mandatory=$true)][string]$PluginSpec, [ValidateRange(0,65535)][int]$Port = 3489,
-    [string[]]$RemovedFiles = @(), [switch]$KeepDisabledOnRollback)
+    [string[]]$RemovedFiles = @(), [switch]$KeepDisabledOnRollback, [string]$JournalPath, $UpdatePaths)
   $ErrorActionPreference = 'Stop'
   $expected = Confirm-LabArchive $Archive $SourceRoot $Manifest
   $obsolete = @{}
@@ -157,7 +306,7 @@ function Invoke-LabLocalReplacement {
     $unique[$full] = $true; $id = [Guid]::NewGuid().ToString('N')
     $entries += [pscustomobject]@{ target = $full; parent = $parent; stage = (Join-Path $parent ('.magpie-model-lab-stage-' + $id)); backup = (Join-Path $parent ('.magpie-model-lab-backup-' + $id)); failed = (Join-Path $parent ('.magpie-model-lab-failed-' + $id)); original = $null; prepared = $null; displaced = $false }
   }
-  $disabled = $false; $portReleased = $false; $activationAttempted = $false; $installed = $false
+  $disabled = $false; $portReleased = $false; $activationAttempted = $false; $installed = $false; $journal = $null
   try {
     foreach ($entry in $entries) {
       $entry.original = Copy-LabVerifiedDirectory $entry.target $entry.stage $entry.parent
@@ -174,15 +323,27 @@ function Invoke-LabLocalReplacement {
       foreach ($name in $obsolete.Keys) { if ($entry.prepared.ContainsKey($name)) { throw "Obsolete file remains in staging: $name" } }
       foreach ($name in $entry.original.Keys) { if (-not $expected.ContainsKey($name) -and -not $obsolete.ContainsKey($name) -and $entry.prepared[$name] -ne $entry.original[$name]) { throw "Staging changed an extra file: $name" } }
     }
+    $journal = [pscustomobject]@{ schema = 'magpie-local-update-v1'; phase = 'prepared'; entries = $entries }
+    Write-LabUpdateJournal $JournalPath $journal
+    Write-LabUpdateReferences $UpdatePaths
     Invoke-LabPluginCommand $MagpieExe $PluginSpec 'off'; $disabled = $true; Wait-LabPortRelease $Port; $portReleased = $true
+    $journal.phase = 'switching'; Write-LabUpdateJournal $JournalPath $journal
     foreach ($entry in $entries) {
       Assert-LabInventory (Get-LabDirectoryInventory $entry.target) $entry.original
       Move-LabDirectory $entry $entry.target $entry.backup; $entry.displaced = $true
       Move-LabDirectory $entry $entry.stage $entry.target
       Assert-LabInventory (Get-LabDirectoryInventory $entry.target) $entry.prepared
     }
+    $journal.phase = 'activating'; Write-LabUpdateJournal $JournalPath $journal
     $activationAttempted = $true; Invoke-LabPluginCommand $MagpieExe $PluginSpec 'on'; $installed = $true
-    return [ordered]@{ stoppedBeforeOverwrite = $true; removedFiles = @($RemovedFiles); backups = @($entries | ForEach-Object { $_.backup }); directories = @($entries | ForEach-Object { [ordered]@{ root = $_.target; filesChecked = $expected.Count; allMatchSource = $true } }) }
+    $journal.phase = 'committed'; Write-LabUpdateJournal $JournalPath $journal
+    $backupCleanupWarnings = @()
+    foreach ($entry in $entries) {
+      $currentBackups = @($entries | Where-Object { [string]::Equals($_.parent, $entry.parent, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { $_.backup })
+      try { Remove-LabOldBackups $entry $currentBackups } catch { $backupCleanupWarnings += $_.Exception.Message }
+    }
+    Complete-LabUpdateJournal $UpdatePaths
+    return [ordered]@{ stoppedBeforeOverwrite = $true; removedFiles = @($RemovedFiles); backups = @($entries | ForEach-Object { $_.backup }); backupCleanupWarnings = $backupCleanupWarnings; directories = @($entries | ForEach-Object { [ordered]@{ root = $_.target; filesChecked = $expected.Count; allMatchSource = $true } }) }
   } catch {
     $failure = $_.Exception.Message; $recovery = @(); $safe = $disabled -and $portReleased
     if ($disabled -and -not $portReleased) { $recovery += 'Plugin remains disabled; port shutdown could not be verified' }
@@ -190,6 +351,7 @@ function Invoke-LabLocalReplacement {
       try { Invoke-LabPluginCommand $MagpieExe $PluginSpec 'off'; Wait-LabPortRelease $Port } catch { $safe = $false; $recovery += $_.Exception.Message; $recovery += 'No rollback was attempted while shutdown remained unverified' }
     }
     if ($safe) {
+      if ($journal) { $journal.phase = 'rolling-back'; Write-LabUpdateJournal $JournalPath $journal }
       for ($index = $entries.Count - 1; $index -ge 0; $index--) {
         $entry = $entries[$index]; if (-not $entry.displaced) { continue }
         try {
@@ -198,6 +360,7 @@ function Invoke-LabLocalReplacement {
         } catch { $recovery += $_.Exception.Message }
       }
       foreach ($entry in $entries) { try { Assert-LabInventory (Get-LabDirectoryInventory $entry.target) $entry.original } catch { $recovery += $_.Exception.Message } }
+      if (-not $recovery.Count -and $journal) { Complete-LabUpdateJournal $UpdatePaths; $journal = $null }
       if (-not $recovery.Count -and $KeepDisabledOnRollback) {
         $recovery += 'Old directories were restored and verified; plugin remains disabled until data compatibility is verified'
       } elseif (-not $recovery.Count) {
@@ -205,13 +368,25 @@ function Invoke-LabLocalReplacement {
         catch { $recovery += $_.Exception.Message; try { Invoke-LabPluginCommand $MagpieExe $PluginSpec 'off' } catch { $recovery += $_.Exception.Message } }
       } else { $recovery += 'Plugin remains disabled; recover from the preserved backups' }
     }
+    if ($journal -and -not @($entries | Where-Object displaced).Count) { Complete-LabUpdateJournal $UpdatePaths; $journal = $null }
     $backups = @($entries | Where-Object { Test-Path -LiteralPath $_.backup } | ForEach-Object { $_.backup }) -join '; '
     if (-not $backups) { $backups = 'none; refer to the verified original target directories' }
     throw "Local replacement failed: $failure. $($recovery -join '; '). Preserved backups: $backups"
   } finally {
     foreach ($entry in $entries) {
-      Remove-LabStaging $entry $entry.stage
-      if ($installed) { Remove-LabStaging $entry $entry.failed }
+      if (-not (Test-Path -LiteralPath $JournalPath)) { Remove-LabStaging $entry $entry.stage; if ($installed) { Remove-LabStaging $entry $entry.failed } }
     }
   }
+}
+function Invoke-LabLocalReplacement {
+  [CmdletBinding()]
+  param([Parameter(Mandatory=$true)][string]$Archive, [Parameter(Mandatory=$true)][string]$SourceRoot,
+    [Parameter(Mandatory=$true)]$Manifest, [Parameter(Mandatory=$true)][string[]]$Targets,
+    [Parameter(Mandatory=$true)][string]$MagpieExe, [Parameter(Mandatory=$true)][string]$PluginSpec, [ValidateRange(0,65535)][int]$Port = 3489,
+    [string[]]$RemovedFiles = @(), [switch]$KeepDisabledOnRollback)
+  $ErrorActionPreference = 'Stop'; $paths = Get-LabUpdatePaths $Targets; $handles = Open-LabUpdateLocks $paths
+  try {
+    Repair-LabReplacementJournal $paths $MagpieExe $PluginSpec $Port | Out-Null
+    return Invoke-LabLocalReplacementCore @PSBoundParameters -JournalPath $paths.journal -UpdatePaths $paths
+  } finally { foreach ($handle in $handles) { $handle.Dispose() } }
 }

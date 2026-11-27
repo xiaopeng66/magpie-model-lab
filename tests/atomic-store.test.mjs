@@ -60,6 +60,39 @@ async function privateState(t) {
   return { state, initial, backup };
 }
 
+for (const stage of [1, 2]) test(`private-state replacement preserves an external edit during ${stage === 1 ? 'backup' : 'primary'} file sync`, async t => {
+  const { state, initial, backup } = await privateState(t), external = { schema: 1, revision: 2, value: 'external protection must survive' };
+  const bytes = JSON.stringify(external), probe = await fs.open(state.path, 'r');
+  const handlePrototype = Object.getPrototypeOf(probe), originalSync = handlePrototype.sync;
+  await probe.close(); let syncedFiles = 0, injected = false;
+  // RYP: Bun does not rebind named fs imports; intercept the real shared handle sync instead.
+  t.mock.method(handlePrototype, 'sync', async function (...args) {
+    await originalSync.apply(this, args);
+    if (++syncedFiles === stage) { await fs.writeFile(state.path, bytes); injected = true; }
+  });
+  t.after(() => t.mock.restoreAll());
+  await assert.rejects(state.enqueue(() => state.commit({ schema: 1, revision: 1, value: 'stale local update' })), error => error.status === 409);
+  assert.equal(injected, true); assert.equal(await fs.readFile(state.path, 'utf8'), bytes);
+  assert.deepEqual(state.snapshot(), initial); assert.ok(state.recoveryError);
+  assert.deepEqual(JSON.parse(await fs.readFile(backup, 'utf8')), initial);
+  assert.deepEqual((await fs.readdir(state.dir)).sort(), ['state.json', 'state.previous.json']);
+});
+
+test('Windows private-state retry rechecks external changes after a sharing failure', { skip: process.platform !== 'win32' }, async t => {
+  const { state, initial } = await privateState(t), bytes = JSON.stringify({ schema: 1, revision: 2, value: 'changed during retry' });
+  const originalRename = fs.rename; let primaryAttempts = 0;
+  t.mock.method(fs, 'rename', async (from, to) => {
+    if (to === state.path && ++primaryAttempts === 1) {
+      await fs.writeFile(state.path, bytes); throw Object.assign(new Error('sharing violation'), { code: 'EPERM' });
+    }
+    return originalRename(from, to);
+  });
+  syncBuiltinESMExports(); t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  await assert.rejects(state.enqueue(() => state.commit({ schema: 1, revision: 1, value: 'stale local update' })), error => error.status === 409);
+  assert.equal(primaryAttempts, 1); assert.equal(await fs.readFile(state.path, 'utf8'), bytes);
+  assert.deepEqual(state.snapshot(), initial); assert.ok(state.recoveryError);
+});
+
 test('Windows transient private-state backup rejection still commits the acknowledged settings', { skip: process.platform !== 'win32' }, async t => {
   const { state, initial, backup } = await privateState(t);
   rejectReplacement(t, backup, 2, 'EPERM'); const next = { schema: 1, revision: 1, value: 'new settings' };

@@ -6,6 +6,16 @@ import { startTestServer, fakeGateway, temporary, waitFor } from './helpers.mjs'
 import { configDigest } from '../lib/config-transfer.mjs';
 const auth=async service=>{'use strict';const html=await(await fetch(service.url)).text();return {'x-pelican-token':html.match(/name="pelican-token" content="([^"]+)"/)[1],'content-type':'application/json'};};
 
+test('bootstrap disables configuration migration when protection storage needs recovery', async t => {
+  const dir = await temporary(t), upstream = await fakeGateway(t), path = join(dir, '.annotations', 'state.json');
+  await mkdir(join(dir, '.annotations')); await writeFile(path, 'unreadable protection index');
+  const service = await startTestServer({ port: 0, dataDir: dir, gatewayUrl: upstream.url }); t.after(() => service.close());
+  const headers = await auth(service), boot = await (await fetch(service.url + 'api/bootstrap', { headers })).json();
+  assert.equal(boot.configAvailable, false); assert.equal(boot.cleanupPaused, true); assert.ok(boot.annotationsError);
+  assert.equal((await fetch(service.url + 'api/config/export', { method: 'POST', headers, body: '{}' })).status, 503);
+  assert.equal(await readFile(path, 'utf8'), 'unreadable protection index'); assert.equal(upstream.seen.requests.length, 0);
+});
+
 test('authenticated configuration routes accept 2 MiB previews while ordinary APIs remain 64 KiB',async t=>{
   const dir=await temporary(t),upstream=await fakeGateway(t),service=await startTestServer({port:0,dataDir:dir,gatewayUrl:upstream.url});t.after(()=>service.close());const headers=await auth(service);
   const post=(path,body,authHeaders=headers)=>fetch(service.url+'api/'+path,{method:'POST',headers:authHeaders,body:JSON.stringify(body)});

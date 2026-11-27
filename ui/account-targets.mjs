@@ -11,12 +11,12 @@ export function createAccountTargets({ document, api, openDrawer, closeDrawer, f
     const picked = new Map((initial || read(model.id)).map(account => [account.mode === 'auto' ? '' : account.id, account]));
     const controls = new Map(), available = new Map(); let loading = false, saving = false, loadFailed = false;
     const list = node('div'), feedback = node('p', '正在读取账号…'); list.className = 'phase-account-list'; feedback.className = 'help'; feedback.setAttribute('role', 'status');
-    const explanation = node('p', '自动分配由 Magpie 选择账号；也可勾选多个固定账号，分别测试同一个模型。'); explanation.className = 'help';
+    const explanation = node('p', '勾选多个固定账号，可对比同一模型。'); explanation.className = 'help';
     const selection = node('div'), selectLabel = node('label'), selectAll = node('input'), selectionCount = node('span');
     selection.className = 'phase-account-selection'; selectLabel.className = 'check-row phase-account-select-all';
     selectAll.type = 'checkbox'; selectAll.setAttribute('aria-label', '全选可用账号'); selectAll.disabled = true;
     selectionCount.className = 'help'; selectionCount.setAttribute('role', 'status'); selectionCount.setAttribute('aria-atomic', 'true');
-    selectLabel.append(selectAll, node('span', '全选可用账号')); selection.append(selectLabel, selectionCount);
+    selectLabel.append(selectAll, node('span', '全选可用账号')); selection.append(selectLabel);
     content.append(node('h3', model.name || model.id), explanation, selection, list, feedback);
     const updateSelection = () => {
       const count = [...picked.keys()].filter(id => id && available.has(id)).length;
@@ -82,15 +82,15 @@ export function createAccountTargets({ document, api, openDrawer, closeDrawer, f
           if (unavailable) picked.delete(account.id);
           const target = { mode: 'pinned', id: account.id, ...(account.name ? { name: account.name } : {}) };
           if (!unavailable && picked.has(account.id)) picked.set(account.id, target);
-          row(target, account.name || account.id, unavailable, unavailable ? '不可用' : '可选择', { ...account, disambiguate: repeated.has(labelKey(account)) });
+          row(target, account.name || account.id, unavailable, unavailable ? '不可用' : '', { ...account, disambiguate: repeated.has(labelKey(account)) });
         }
         for (const id of [...picked.keys()]) if (id && !candidates.some(account => account.id === id)) picked.delete(id);
-        const status = result.capabilities?.pinned === false ? result.capabilities.reason || '宿主未确认固定账号路由能力' : candidates.length ? '“可选择”表示未停用且符合当前模型设置；实际认证与账号路由以请求结果为准。' : '此供应商暂无可显示的账号，可保留自动分配。';
+        const status = result.capabilities?.pinned === false ? result.capabilities.reason || '宿主未确认固定账号路由能力' : candidates.length ? '实际使用的账号以测试结果为准。' : '此供应商暂无可显示的账号，可保留自动分配。';
         feedback.textContent = [result.warning, status].filter(Boolean).join(' ');
       } catch (error) { if (version !== generation) return; loadFailed = true; list.replaceChildren(); controls.clear(); available.clear(); feedback.textContent = `${error.message}。请刷新账号后再确认。`; }
       finally { loading = false; if (version === generation) { updateSelection(); list.setAttribute('aria-busy', 'false'); } }
     };
-    const refresh = button('刷新账号', load); content.append(refresh); await load();
+    const refresh = button('刷新账号', load); selection.append(refresh, selectionCount); await load();
   }
   return { load(value) { supported = value === true; }, get supported() { return supported; }, read, open,
     label(id) { const accounts = read(id); return accounts.length === 1 ? accounts[0].mode === 'auto' ? '自动分配' : accountLabel(accounts[0]) : `${accounts.length} 个固定账号`; },

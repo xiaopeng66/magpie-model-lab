@@ -45,6 +45,15 @@ test('the account picker requests the current full model ID and shows ordinary K
   assert.deepEqual(env.applied(), [{ mode: 'pinned', id: keyID(primaryKey), name: '分组 A' }]);
 });
 
+test('the account refresh remains above the scrollable account list', async t => {
+  const env = await picker(t, { capabilities: { pinned: true }, accounts: accounts() });
+  const list = env.ui.descendants(env.body).find(element => element.className === 'phase-account-list');
+  const refresh = env.find('刷新账号');
+  const index = env.body.children.indexOf(refresh.parentElement);
+  assert.ok(index >= 0 && index < env.body.children.indexOf(list));
+  assert.equal(refresh.parentElement.contains(env.all), true);
+});
+
 test('refresh removes deleted or unsupported Keys, updates renamed selections and preserves a partial-source warning', async t => {
   let reads = 0;
   const env = await picker(t, () => ({ capabilities: { pinned: true }, warning: '已注册账号缓存暂不可读，当前只显示本机 API Key。', accounts: reads++ ? [{ ...accounts()[0], name: '改名后的分组' }] : accounts().map(account => ({ ...account, available: null })) }),

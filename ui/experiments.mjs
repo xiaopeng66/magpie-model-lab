@@ -29,7 +29,7 @@ export function createExperimentControls({ $, kind, targetCount }) {
   };
   $('repeat-count').addEventListener('input', changed);
   return { load(boot) {
-    enabled = boot.experimentsAvailable === true; $('experiment-controls').hidden = !enabled; changed();
+    enabled = boot.experimentsAvailable === true; $('experiment-controls').hidden = !enabled; $('experiment-estimate').hidden = !enabled; changed();
   }, update: changed, capture() {
     if (!enabled) return {};
     const count = countFor();

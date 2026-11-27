@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { runInNewContext } from "node:vm";
 import { createServer } from "node:http";
+import { fakeGateway } from "./helpers.mjs";
 
 const protocol = await import("../lib/gateway.mjs").catch(() => ({}));
 const result = await import("../lib/result.mjs").catch(() => ({}));
@@ -73,6 +74,26 @@ test("SSE retains multi-line data rather than splitting one JSON event", async (
   const events = [];
   for await (const item of protocol.parseSSE(stream)) events.push(item);
   assert.deepEqual(events, [{ event: "message", data: '{\n"ok": true\n}' }]);
+});
+
+test("generation selects candidate zero regardless of choice order and ignores other candidate frames", async t => {
+  for (const reversed of [false, true]) {
+    const upstream = await fakeGateway(t, ({ res, chunk }) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      chunk({ choices: [{ index: 1, delta: { content: "另一个候选", reasoning_content: "不应采用" }, finish_reason: "length" }] });
+      const choices = [
+        { index: 0, delta: { content: "最终答案：20", reasoning_content: "候选零" }, finish_reason: "stop" },
+        { index: 1, delta: { content: "最终答案：21", reasoning_content: "候选一" }, finish_reason: "length" },
+      ];
+      chunk({ choices: reversed ? choices.reverse() : choices });
+      res.end("data: [DONE]\n\n");
+    });
+    let content = "", reasoning = ""; const events = [];
+    const result = await new protocol.Gateway({ url: upstream.url }).generate({ model: "fixture/one", messages: [], stream: true },
+      { onChunk: chunk => { content += chunk.content; reasoning += chunk.reasoning; events.push(chunk); } });
+    assert.equal(content, "最终答案：20"); assert.equal(reasoning, "候选零");
+    assert.equal(result.finishReason, "stop"); assert.equal(events.length, 1);
+  }
 });
 
 test("SSE bounds the combined UTF-8 bytes of a multiline event and cancels an oversized stream", async () => {

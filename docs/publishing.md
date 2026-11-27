@@ -18,15 +18,19 @@ Magpie 的普通 npm 搜索当前主要筛选 OpenCode 供应商插件和 pi pro
 
 后续发行说明统一从 [版本日志数据](../ui/release-notes.mjs) 导出。GitHub 完整说明依次采用「更新内容、体验优化、验证、安装与升级、使用说明」；没有原始内容的栏目省略。插件使用同一份版本数据，只展示更新内容和体验优化，安装、验证及使用说明保留在 GitHub。日期按北京时间显示；新版本发布后回读 GitHub `published_at` 核对日期，历史版本保留原始发布时间。
 
-更新内容以该版本最终实现与上一正式版本的差异为依据，不记录开发中的多次调整、临时功能的增删或没有变化的功能。当前 1.0.8 以正式 1.0.7 为基准。历史版本继续保留各自发布时的实际更新，不把新版本功能补入旧说明。
+更新内容以该版本最终实现与上一正式版本的差异为依据，不记录开发中的多次调整、临时功能的增删或没有变化的功能。当前 1.0.9 以正式 1.0.8 为基准。历史版本继续保留各自发布时的实际更新，不把新版本功能补入旧说明。
 
 先在数据中核对版本内容和已发布状态，再生成单个版本的说明文件：
 
 ```powershell
-node tools/release-notes.mjs 1.0.8 dist/release-notes-v1.0.8.md
+node tools/release-notes.mjs 1.0.9 dist/release-notes-v1.0.9.md
 ```
 
 导出器只写本地 Markdown，不执行发布或远端修改。本地开发条目不允许作为正式说明导出；准备已授权的正式发布时，在最终交付文件中设置版本日期和发行链接，去掉本地标记，完成检查后发布，再回读标签、资产、日期与内容。修改已有 GitHub 说明应先备份原正文，用 `--notes-file` 或 JSON 文件传入真实换行，并重新读取确认；标签、资产和原发布时间继续保留。
+
+## 1.0.9 正式更新
+
+正式标签为 `v1.0.9`，附件为 `magpie-pelican-bench-1.0.9.zip` 及其 `.zip.sha256`。新增动画 GIF 导出，并修复异常退出、更新中断、参考库和配置迁移等稳定性问题。更新中断恢复在下次调用完整替换或恢复工具时执行，单独恢复保持插件停用。完整变化见[更新记录](../CHANGELOG.md)。
 
 ## 1.0.8 正式更新
 
@@ -79,19 +83,35 @@ README.md  CHANGELOG.md  LICENSE  THIRD_PARTY_NOTICES.md  .gitignore
 
 开发工作目录还保留内部设计与验证材料。发布时使用白名单生成的 ZIP 解压目录作为 Git 仓库来源，避免直接把整个开发目录推上网。安装包不含运行数据、自动计划、参考库缓存、烟雾测试结果或内部验证报告。npm 包只包含运行文件与公开文档；ZIP 另含开发工具及测试。
 
-以下命令检查 1.0.8 并生成发布包，不执行安装或发布：
+以下命令检查 1.0.9 并生成发布包，不执行安装或发布：
 
 ```powershell
 node --test tests/*.test.mjs
 bun test ./tests
 bun tools/check-static.mjs
 npm pack --dry-run --json
-powershell -NoProfile -File tools/package.ps1 -OutputDirectory dist/release-1.0.8
-powershell -NoProfile -File tools/check-package.ps1 -Archive dist/release-1.0.8/magpie-pelican-bench-1.0.8.zip
+powershell -NoProfile -File tools/package.ps1 -OutputDirectory dist/release-1.0.9
+powershell -NoProfile -File tools/check-package.ps1 -Archive dist/release-1.0.9/magpie-pelican-bench-1.0.9.zip
 npm pack --pack-destination dist --ignore-scripts
 ```
 
 打包先写唯一临时 ZIP，逐文件核验成功后才生成最终文件名；失败不留下半包，补齐文件后可在同一目录重试。脚本拒绝覆盖已经存在的同名 ZIP；需要再次构建时通过 `-OutputDirectory` 指定新目录。核对 `.zip.sha256` 和 npm 包实际文件清单后再发布。
+
+## 本地替换与中断恢复
+
+本地替换使用 `tools/replace-local.ps1` 的 `Invoke-LabLocalReplacement`，先验证 ZIP、暂存目录与原目录，再关闭插件并验证端口释放，最后切换全部目标并开启。需先完整备份数据。每个安装父目录持有系统排他文件锁；同父目录的替换和旧备份清理不会并发执行。
+
+工具在首次移动前原子保存并刷新事务日志 `.magpie-model-lab-update-<目标集合摘要>.json`，每个父目录保存 `.magpie-model-lab-update.pending.json` 引用。下次使用同一完整目标集合执行时先恢复；单独恢复命令如下，路径替换为实际安装目录，端口与插件选项一致：
+
+```powershell
+. ./tools/replace-local.ps1
+$targets = @('C:/actual/plugin-installation/magpie-pelican-bench')
+Repair-LabLocalReplacement -Targets $targets -MagpieExe 'C:/actual/Magpie/magpie.com' -PluginSpec 'github:xiaopeng66/magpie-model-lab' -Port 3489
+```
+
+恢复先关闭插件并核对所有目录清单、哈希和路径，再进行任何目录移动。启用前中断恢复全部旧目录，进入启用阶段后的中断保留全部经验证新版；两者均保持停用。重复恢复可安全执行，恢复过程再次被强杀也可续接。单独恢复完成后核对数据与代码，再执行完整替换或开启插件。已成功的替换保留本次各目标回滚副本与父目录最近一份旧备份。
+
+部分目标、并发替换、外部修改、链接路径或损坏／缺失事务会拒绝操作并保留现场。不能删除引用或事务后强行继续；它们属于更新恢复所需证据。进程强杀可能使目录暂时缺失，恢复在下次调用工具时发生；工具不安装常驻恢复进程，也不承诺断电或存储硬件故障后的文件系统原子性。
 
 ## GitHub 首次发布步骤（1.0.0 历史记录）
 
@@ -110,7 +130,7 @@ gh release create v1.0.0 --repo xiaopeng66/magpie-model-lab --verify-tag --title
 
 随后在该 Release 上传验证后的 `magpie-pelican-bench-1.0.0.zip` 和 `.zip.sha256`。GitHub 自带源码压缩包也可安装，但独立 ZIP 直接包含插件根目录，便于本地添加。
 
-用户可以使用 `magpie plugin add github:xiaopeng66/magpie-model-lab` 安装默认分支，或附加 `#v1.0.8` 固定本次正式版。后续发布保留同一仓库和包名，并递增版本。
+用户可以使用 `magpie plugin add github:xiaopeng66/magpie-model-lab` 安装默认分支，或附加 `#v1.0.9` 固定本次正式版。后续发布保留同一仓库和包名，并递增版本。
 
 ## 验证发现
 

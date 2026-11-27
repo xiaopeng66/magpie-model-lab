@@ -4,9 +4,30 @@ import { Gateway } from "../lib/gateway.mjs";
 import { Runner } from "../lib/runner.mjs";
 import { RunStore } from "../lib/store.mjs";
 import { summary } from "../lib/result.mjs";
+import { sumUsage } from "../lib/usage.mjs";
 import { sampleFingerprint } from "../lib/fingerprint-sample.mjs";
 import { startTestServer as startServer, fakeGateway, temporary, waitFor, FIXTURE_HTML } from "./helpers.mjs";
 import { fingerprintGateway, numberReply, referenceFixture } from "./fingerprint-helpers.mjs";
+
+test("fingerprint usage totals stay unknown after a top-level count overflows", () => {
+  assert.deepEqual(sumUsage([
+    { usage: { total_tokens: Number.MAX_SAFE_INTEGER, completion_tokens: 0 } },
+    { usage: { total_tokens: 2, completion_tokens: 4 } },
+    { usage: { total_tokens: 3, completion_tokens: 5 } },
+  ]), { total_tokens: null, completion_tokens: 9 });
+  assert.deepEqual(sumUsage([
+    { usage: { total_tokens: Number.MAX_SAFE_INTEGER - 2 } },
+    { usage: { total_tokens: 2 } },
+  ]), { total_tokens: Number.MAX_SAFE_INTEGER });
+});
+
+test("fingerprint usage details stay unknown after a nested count overflows", () => {
+  assert.deepEqual(sumUsage([
+    { usage: { completion_tokens_details: { reasoning_tokens: Number.MAX_SAFE_INTEGER, accepted_prediction_tokens: 0 } } },
+    { usage: { completion_tokens_details: { reasoning_tokens: 2, accepted_prediction_tokens: 1 } } },
+    { usage: { completion_tokens_details: { reasoning_tokens: 3, accepted_prediction_tokens: 2 } } },
+  ]), { completion_tokens_details: { reasoning_tokens: null, accepted_prediction_tokens: 3 } });
+});
 
 test("all three tests project reported tokens, retaining zero and distinguishing missing samples", () => {
   for (const kind of ["pelican", "candy"]) {

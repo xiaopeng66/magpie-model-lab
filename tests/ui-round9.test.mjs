@@ -82,13 +82,17 @@ test('closing while confirming a rule deletion prevents changing detached settin
   assert.equal(env.writes(), 0); assert.equal(env.settings.snapshot().queue.providers.fixture.concurrency, 2);
 });
 
-test('selectable accounts with missing cache state do not claim unknown health or verified credentials', async t => {
+test('account rows flag only unavailable accounts and do not overstate health or verification', async t => {
   const ui = await uiHarness({ bootstrap: { models: [], runs: [], defaultPrompt: 'test' } }); t.after(() => ui.closeStream()); await waitFor(() => !ui.elements.get('generate').disabled);
   const body = ui.elements.get('drawer-content'), picker = createAccountTargets({ document: ui.document, api: async () => ({ capabilities: { pinned: true }, accounts: [{ id: 'a', enabled: null }, { id: 'off', enabled: false }] }), openDrawer: () => body, closeDrawer() {}, footer: () => ui.elements.get('drawer-footer') });
   await picker.open({ id: 'fixture/one', provider: 'fixture' });
-  const rows = ui.descendants(body, 'label'), selectable = rows.find(row => ui.descendants(row, 'input').some(input => input.dataset.accountId === 'a'));
+  const rows = ui.descendants(body, 'label');
+  const rowFor = id => rows.find(row => ui.descendants(row, 'input').some(input => input.dataset.accountId === id));
+  const selectable = rowFor('a'), unavailable = rowFor('off');
   assert.equal(ui.descendants(selectable, 'input')[0].disabled, false);
-  assert.ok(ui.descendants(selectable, 'span').some(span => span.textContent === '可选择'));
+  assert.equal(ui.descendants(selectable).some(node => node.className === 'phase-account-state'), false);
+  assert.equal(ui.descendants(unavailable, 'input')[0].disabled, true);
+  assert.ok(ui.descendants(unavailable).some(node => node.textContent === '不可用'));
   assert.equal(ui.descendants(selectable, 'span').some(span => /状态未知|缓存可用|已验证/.test(span.textContent)), false);
 });
 

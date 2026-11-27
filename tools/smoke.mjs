@@ -4,6 +4,7 @@ import { parseArgs } from "node:util";
 import { Gateway, DEFAULT_PROMPT } from "../lib/gateway.mjs";
 import { RunStore } from "../lib/store.mjs";
 import { Runner } from "../lib/runner.mjs";
+import { pruneSmokeRuns } from "./smoke-retention.mjs";
 
 const { values } = parseArgs({ options: { "data-dir": { type: "string" }, models: { type: "string", default: "deepseek/deepseek-flash,rua/gpt-6-astra" } } });
 const dataDir = values["data-dir"] || resolve(".test-data", "smoke", "runs");
@@ -31,6 +32,7 @@ try {
     if (await readFile(run.files.html, "utf8") !== run.html) throw new Error("Saved HTML differs from original result");
   }
   const report = results.map(({ id, model, status, promptHash, effort, maxTokens, usage, elapsedMs, firstContentMs, files, error }) => ({ id, model, status, promptHash, effort, maxTokens, usage, elapsedMs, firstContentMs, files, error }));
+  if (!values["data-dir"]) await pruneSmokeRuns(store, runner);
   await mkdir("docs", { recursive: true });
   await writeFile("docs/smoke-results.json", JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));

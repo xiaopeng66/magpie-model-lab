@@ -78,7 +78,7 @@ class Element {
   async fire(type, details = {}) { for (const listener of [...(this.handlers[type] || []), this[`on${type}`]].filter(Boolean)) await listener({ preventDefault() {}, target: this, ...details }); }
 }
 
-export async function uiHarness({ bootstrap, detail, create, cleanup, open, openStorage, bank, accounts, exportBatch, saveBatch, favorites, retests, settings, annotations, retention, writeClipboard, request, intersection = false, navigate = () => {}, search = "", viewport = { width: 1024, height: 768 }, token = "test-only-token", now = Date.now, monotonicNow = () => performance.now() }) {
+export async function uiHarness({ bootstrap, detail, create, cleanup, open, openStorage, bank, accounts, exportBatch, saveBatch, gifExport, gifFile, saveGif, copyGif, removeGif, favorites, retests, settings, annotations, retention, writeClipboard, request, intersection = false, trackCollections = false, navigate = () => {}, search = "", viewport = { width: 1024, height: 768 }, token = "test-only-token", now = Date.now, monotonicNow = () => performance.now() }) {
   const source = await readFile(new URL("../ui/favorites.js", import.meta.url), "utf8") + "\n" + (await readFile(new URL("../ui/app.js", import.meta.url), "utf8")).replace(/^import .*;\r?\n/gm, "");
   const html = await readFile(new URL("../ui/index.html", import.meta.url), "utf8");
   const elements = new Map([...html.matchAll(/<([a-z][\w:-]*)\b[^>]*\bid="([^"]+)"[^>]*>/gi)].map(match => {
@@ -98,6 +98,7 @@ export async function uiHarness({ bootstrap, detail, create, cleanup, open, open
       ? [...elements].find(([id, element]) => id.endsWith("-tab") && element.getAttribute("aria-selected") === "true")?.[1] : null, documentElement: new Element("html"), activeElement: null };
   for (const element of [app, document.documentElement, ...elements.values()]) { element.ownerDocument = document; element._connected = true; }
   elements.get("favorite-drawer").append(...["drawer-backdrop", "drawer-back", "drawer-title", "drawer-tools", "drawer-close", "drawer-content", "drawer-status", "drawer-footer"].map(id => elements.get(id)));
+  elements.get("confirm-dialog").append(...["confirm-title", "confirm-message", "confirm-cancel", "confirm-accept"].map(id => elements.get(id)));
   const tabs = new Element(), window = { scrollY: 0, scrollTo({ top }) { this.scrollY = top; }, scrollBy({ top }) { this.scrollY += top; } };
   app.append(tabs); tabs.append(...["current", "fingerprint", "candy", "favorites", "history"].map(name => elements.get(`${name}-tab`)));
   let controller;
@@ -115,6 +116,11 @@ export async function uiHarness({ bootstrap, detail, create, cleanup, open, open
     if (path === "api/runs/cleanup" && options.method === "POST") return Response.json(await cleanup(JSON.parse(options.body)));
     if (path === "api/storage/open" && options.method === "POST") return Response.json(await openStorage(options));
     if (path === "api/fingerprint/bank" || path === "api/fingerprint/bank/refresh") return Response.json(await bank(path, options));
+    if (/^api\/runs\/[^/]+\/gif$/.test(path) && options.method === "POST") return Response.json(await gifExport(path, options));
+    if (/^api\/gifs\/[^/]+\/file$/.test(path)) return new Response(await gifFile(path.split("/")[2]), { headers: { "content-type": "image/gif" } });
+    if (/^api\/gifs\/[^/]+\/copy$/.test(path)) return Response.json(await copyGif(path, JSON.parse(options.body)));
+    if (/^api\/gifs\/[^/]+\/save$/.test(path)) return Response.json(await saveGif(path));
+    if (/^api\/gifs\/[a-f0-9-]+\/delete$/.test(path) && options.method === "POST") return Response.json(await removeGif(path));
     if (path === "api/fingerprint/accounts" || path.startsWith('api/accounts')) return Response.json({ accounts: await accounts() });
     if (path.startsWith("api/favorites") || path.startsWith("api/schedules")) return Response.json(await (favorites ? favorites(path, options.body ? JSON.parse(options.body) : undefined) : bootstrap.favorites));
     if (/^api\/batches\/[^/]+\/export$/.test(path)) return Response.json(await exportBatch(path.split("/")[2]));
@@ -139,7 +145,14 @@ export async function uiHarness({ bootstrap, detail, create, cleanup, open, open
     unobserve(element) { observed.delete(element); }
     disconnect() { observed.clear(); }
   }
-  const copied = [];
+  const copied = [], createdObjectUrls = [], revokedObjectUrls = [];
+  const trackedMaps = [], trackedSets = [];
+  class TestMap extends Map { constructor(...args) { super(...args); if (trackCollections) trackedMaps.push(this); } }
+  class TestSet extends Set { constructor(...args) { super(...args); if (trackCollections) { this.testCreation = new Error().stack; trackedSets.push(this); } } }
+  class TestURL extends URL {
+    static createObjectURL() { const value = `blob:fixture/${createdObjectUrls.length + 1}`; createdObjectUrls.push(value); return value; }
+    static revokeObjectURL(value) { revokedObjectUrls.push(value); }
+  }
   const timers = new Map(), intervals = new Map(); let nextTimer = 0;
   const parent = {};
   const location = { search, replace: navigate }, history = { replaceState(_state, _title, url) { location.search = new URL(url, "http://fixture.local/").search; } };
@@ -147,13 +160,14 @@ export async function uiHarness({ bootstrap, detail, create, cleanup, open, open
     constructor(...args) { super(...(args.length ? args : [now()])); }
     static now() { return now(); }
   }
-  runInNewContext(source, { Date: TestDate, performance: { now: monotonicNow }, crypto: webcrypto, document, fetch, window, parent, history, structuredClone, batchKey, historyBatches, historyTime, recentTestBatches, renderDailyHistory, createBatchRetest, openRetestDrawer, failureInfo, createResultInsights, createSettingsUI, mergeProgress, createRuntimeClock, createRunProgressView, createAccountTargets, createExperimentControls, repeatedResultGroups, createPresetManager, generationTimeoutFromSeconds, createRunNotes, createLabTools, createChangelog, targetLabel, normalizeTarget, readGrade, suiteCatalog, historyMatches, AbortController,
+  runInNewContext(source, { Date: TestDate, performance: { now: monotonicNow }, crypto: webcrypto, URL: TestURL, Blob, document, fetch, window, parent, history, structuredClone, batchKey, historyBatches, historyTime, recentTestBatches, renderDailyHistory, createBatchRetest, openRetestDrawer, failureInfo, createResultInsights, createSettingsUI, mergeProgress, createRuntimeClock, createRunProgressView, createAccountTargets, createExperimentControls, repeatedResultGroups, createPresetManager, generationTimeoutFromSeconds, createRunNotes, createLabTools, createChangelog, targetLabel, normalizeTarget, readGrade, suiteCatalog, historyMatches, AbortController,
+    ...(trackCollections ? { Map: TestMap, Set: TestSet } : {}),
     navigator: { clipboard: { writeText: writeClipboard || (async value => copied.push(value)) } }, location, matchMedia: () => ({ matches: false }), CSS: { supports: () => true },
     URLSearchParams, Response, TextDecoder, ResizeObserver, ...(intersection ? { IntersectionObserver } : {}), innerWidth: viewport.width, innerHeight: viewport.height, setInterval(callback, delay) { intervals.set(callback, delay); }, setTimeout(callback) { timers.set(++nextTimer, callback); return nextTimer; }, clearTimeout(id) { timers.delete(id); },
     requestAnimationFrame(listener) { frames.set(++nextFrame, listener); return nextFrame; }, cancelAnimationFrame(id) { frames.delete(id); },
     addEventListener(type, listener) { (listeners[type] ||= []).push(listener); }, console });
   const dispatch = (type, value) => { for (const listener of listeners[type] || []) listener(value); };
-  return { elements, document, event, observed, copied, parent, location, window, closeStream() { controller.close(); }, timers, runTimer(id) { const callback = timers.get(id); timers.delete(id); callback?.(); }, intersect(element, visible) { intersections.get(element)?.([{ target: element, isIntersecting: visible }]); }, pendingFrames: () => frames.size,
+  return { elements, document, event, observed, copied, createdObjectUrls, revokedObjectUrls, trackedMaps, trackedSets, parent, location, window, closeStream() { controller.close(); }, timers, runTimer(id) { const callback = timers.get(id); timers.delete(id); callback?.(); }, intersect(element, visible) { intersections.get(element)?.([{ target: element, isIntersecting: visible }]); }, pendingFrames: () => frames.size,
     flushFrames() { const pending = [...frames.values()]; frames.clear(); for (const listener of pending) listener(); },
     dispatch, tickIntervals() { for (const callback of intervals.keys()) callback(); }, message(value) { dispatch("message", value); }, descendants(element, tag) {
     const out = [];

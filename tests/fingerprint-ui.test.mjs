@@ -314,6 +314,28 @@ test("reference updates and cached account loading are explicit and per-model ac
   assert.equal(creates[0].models[0].account, "北冥"); assert.equal(creates[0].strict, true); assert.equal(creates[0].api, "messages");
 });
 
+test("the upstream update marker stays inline and clears only after the user refreshes the bank", async () => {
+  const ui = await uiHarness({ bootstrap: { ...boot(), bankStatus: { state: "ready", updateAvailable: true, meta: { modelCount: 70 } } }, detail: details,
+    bank: async path => path.endsWith("/refresh") ? { state: "ready", updateAvailable: false, meta: { modelCount: 70 } } : { state: "ready", updateAvailable: true, meta: { modelCount: 70 } } });
+  const badge = ui.elements.get("bank-update-badge");
+  await waitFor(() => !badge.hidden);
+  assert.equal(badge.hidden, false); assert.equal(badge.textContent, "有更新");
+  assert.equal(ui.elements.get("bank-refresh").getAttribute("aria-label"), "有更新，更新参考库");
+  await ui.elements.get("bank-refresh").fire("click");
+  assert.equal(badge.hidden, true, "The marker clears when the selected upstream snapshot is installed");
+});
+
+test("reference check failures remain visible alongside the usable cached bank and last successful check", async () => {
+  const lastSuccessfulCheckAt = Date.parse("2026-11-27T08:00:00Z");
+  const ui = await uiHarness({ bootstrap: { ...boot(), bankStatus: { state: "ready", checkError: "参考库检查 HTTP 503", lastCheckedAt: lastSuccessfulCheckAt + 300000, lastSuccessfulCheckAt, meta: { modelCount: 70 } } }, detail: details });
+  await waitFor(() => ui.elements.get("bank-status").textContent.includes("就绪"));
+  assert.ok(ui.elements.get("bank-status").textContent.includes("检查失败"), "The failure must be visible even while bank details are collapsed");
+  assert.ok(ui.elements.get("bank-meta").textContent.includes("检查失败"));
+  assert.ok(ui.elements.get("bank-meta").textContent.includes("503"));
+  assert.ok(ui.elements.get("bank-meta").textContent.includes("最近成功"));
+  assert.equal(ui.elements.get("bank-refresh").disabled, false);
+});
+
 test("an older backend explains unavailable fingerprint detection without sending new endpoints", async () => {
   const calls = [];
   const ui = await uiHarness({ bootstrap: { ...boot(), fingerprintAvailable: false, batchExport: false, batchCancel: false }, detail: details, create: async body => { calls.push(body); return {}; } });

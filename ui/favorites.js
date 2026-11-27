@@ -38,13 +38,16 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
 
   async function perform(control, callback, panel = false, lockForm = false) {
     if (control.disabled || pendingActions.has(control)) return;
-    const version = drawerVersion; pendingActions.add(control); control.disabled = true; control.setAttribute("aria-busy", "true"); status("", panel);
+    const version = drawerVersion, hadFocus = document.activeElement === control; pendingActions.add(control); control.disabled = true; control.setAttribute("aria-busy", "true"); status("", panel);
     const locked = lockForm ? [$("drawer-content"), $("drawer-footer")].flatMap(root => [...root.querySelectorAll("input, select, textarea, button")]).filter(item => item !== control).map(item => [item, item.disabled]) : [];
     for (const [item] of locked) item.disabled = true;
     try { await callback(version); } catch (error) { if (!panel || version === drawerVersion) status(error.message, panel); }
     finally {
       for (const [item, disabled] of locked) item.disabled = disabled;
       pendingActions.delete(control); control.removeAttribute("aria-busy"); control.disabled = false; if (!panel || version === drawerVersion) control.refreshDisabled?.();
+      const dialog = $("confirm-dialog");
+      if (hadFocus && version === drawerVersion && !control.disabled && control.getClientRects().length &&
+        (document.activeElement === document.body || !dialog.open && dialog.contains(document.activeElement))) control.focus({ preventScroll: true });
     }
   }
   function action(label, callback, className = "quiet", panel = true, lockForm = false) {
@@ -93,6 +96,7 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
   }
   for (const id of ["drawer-close", "drawer-backdrop"]) $(id).addEventListener("click", closeDrawer);
   $("favorite-drawer").addEventListener("keydown", event => {
+    if (event.isComposing || event.keyCode === 229) return;
     if (event.key === "Escape") { event.preventDefault(); closeDrawer(); }
     if (event.key === "Tab") {
       const controls = [...($("favorite-drawer").querySelectorAll?.('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, a[href], [tabindex]') || [])].filter(item => item.getClientRects?.().length && !item.disabled && item.getAttribute("tabindex") !== "-1");
@@ -216,7 +220,6 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
       for (const ref of run.plans || []) if (ref.triggerKey) indexed.set(ref.triggerKey, run);
     }
     for (const key of Object.keys(labels)) $("favorite-" + key).setAttribute("aria-pressed", String(key === kind));
-    $("gallery-navigation").hidden = isCandy;
     $('favorite-card-legend').hidden = !isCandy;
     $("favorite-candy-grid").hidden = !isCandy; $("favorite-results").hidden = isCandy; $("favorite-empty").hidden = favorites.length > 0;
     if (isCandy) {
@@ -238,14 +241,20 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
       for (const [index, favorite] of visible.entries()) {
         const plan = planOf(favorite), slots = recordsFor(favorite, plan, indexed).sort((first, second) =>
           Date.parse(second.at) - Date.parse(first.at) || second.label.localeCompare(first.label));
-        const signature = JSON.stringify([favorite.modelId, favorite.modelName, favorite.providerName, plan?.id, plan?.today?.date, slots.map(s => [s.key, s.at])]);
+        const signature = JSON.stringify([favorite.modelId, favorite.modelName, favorite.providerName, plan?.id, plan?.migrationReason, plan?.today?.date, slots.map(s => [s.key, s.at])]);
         let row = animationRows.get(favorite.id);
         if (!row || row.signature !== signature) {
           row?.root.remove(); const root = node("section", "animation-row"), heading = node("div", "animation-model"), lane = node("div", "animation-lane");
-          const schedule = planControls(favorite, plan); heading.append(cardHeading(favorite), schedule); lane.setAttribute("tabindex", "0"); lane.setAttribute("role", "region"); lane.setAttribute("aria-label", `${titleOf(favorite)} 的动画时间长廊`);
+          const schedule = planControls(favorite, plan); heading.append(cardHeading(favorite), schedule);
+          root.dataset.empty = String(slots.length === 0);
+          lane.hidden = !plan && !slots.length;
+          if (slots.length) {
+            lane.setAttribute("tabindex", "0"); lane.setAttribute("role", "region"); lane.setAttribute("aria-label", `${titleOf(favorite)} 的动画时间长廊`);
+          } else if (plan) {
+            lane.append(node("p", "help animation-no-plan", plan.migrationReason || "今日没有测试时刻"));
+          }
           root.append(heading, lane); row = { root, lane, schedule, signature, slots: new Map() }; animationRows.set(favorite.id, row); lane.addEventListener("scroll", updateGalleryButtons);
           for (const slot of slots) { const cell = node("div", "animation-slot"), time = node("div", "animation-time", slot.label), body = node("div", "animation-slot-body"); cell.append(time, body); lane.append(cell); row.slots.set(slot.key, { cell, body, placeholder: null }); }
-          if (!slots.length) lane.append(node("p", "help animation-no-plan", !plan ? "暂无计划" : plan.migrationReason || "今日没有测试时刻"));
         }
         row.schedule.update(plan);
         for (const slot of slots) {
@@ -270,6 +279,7 @@ globalThis.createFavoritesUI = function ({ $, node, text, button, iconButton, ap
       }
       mount(ids, targets);
     }
+    $("gallery-navigation").hidden = isCandy || ![...animationRows.values()].some(row => row.slots.size);
     text($("favorite-page-info"), favorites.length ? `${favorites.length} 个模型 · ${page + 1} / ${pages}` : "");
     $("favorite-prev").disabled = page === 0; $("favorite-next").disabled = page >= pages - 1;
     requestAnimationFrame(updateGalleryButtons);

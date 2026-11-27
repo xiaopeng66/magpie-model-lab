@@ -43,6 +43,17 @@ test("fingerprint batch export preserves raw evidence and history cleanup remove
   assert.equal((await (await api("fingerprint/bank")).json()).meta.sha256, detail.bank.sha256);
 });
 
+test("retrying a failed manual refresh checks the latest manifest before downloading again", async t => {
+  const bank = referenceFixture("2026-11-26T00:00:00Z", true), { api } = await setup(t, { bank });
+  assert.equal((await api("fingerprint/bank/refresh", { method: "POST" })).status, 200);
+  Object.assign(bank, referenceFixture("2026-11-27T00:00:00Z", true));
+  assert.equal((await api("fingerprint/bank/check", { method: "POST" })).status, 200);
+  Object.assign(bank, referenceFixture("2026-11-28T00:00:00Z", true));
+  assert.equal((await api("fingerprint/bank/refresh", { method: "POST" })).status, 502);
+  const retry = await api("fingerprint/bank/refresh", { method: "POST" }); assert.equal(retry.status, 200);
+  assert.equal((await retry.json()).meta.builtAt, "2026-11-28T00:00:00Z");
+});
+
 test("authenticated batch cancellation stops all scheduled fingerprint calls as one operation", async t => {
   const { service, upstream, api } = await setup(t, { handler: ({ res, chunk }) => {
     res.writeHead(200, { "content-type": "text/event-stream" }); chunk({ choices: [{ delta: { content: "1, 300, " } }] });

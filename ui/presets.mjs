@@ -69,9 +69,14 @@ export function createPresetManager({ document, $, settingsUI, openDrawer, close
       for (const input of fields) input.removeAttribute('aria-invalid');
     };
     const runAction = handler => async () => {
-      if (busy || panel !== current) return; busy = true; updateControls();
+      if (busy || panel !== current) return; const opener = document.activeElement; busy = true; updateControls();
       try { await handler(); } catch (error) { pick.value = selectedId; showError(error); }
-      finally { if (panel === current) { busy = false; updateControls(); } }
+      finally { if (panel === current) {
+        busy = false; updateControls();
+        const dialog = $('confirm-dialog');
+        if (opener?.isConnected && !opener.disabled && opener.getClientRects().length &&
+          (document.activeElement === document.body || !dialog.open && dialog.contains(document.activeElement))) opener.focus({ preventScroll: true });
+      } }
     };
     const discard = async () => !dirty || await confirmAction('切换方案', '当前方案有未保存修改，是否放弃这些修改并切换？', '放弃并切换');
     const choose = async id => {

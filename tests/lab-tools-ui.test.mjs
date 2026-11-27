@@ -39,9 +39,28 @@ test('a resolved preview applies the token and confirmation after showing affect
     if (path.endsWith('/preview')) return { token: 'current-token', differences: [{ sourceRef: 'target-1', action: 'add' }], pausedPlanIds: ['plan'], unresolved: [], retentionImpact: { days: 1, candidateCount: 2 } };
     if (path.endsWith('/apply')) { applied = JSON.parse(options.body); return { applied: true }; }
     throw Error(path);
-  } }); await openImport(env); await env.find('预览配置差异').fire('click'); await env.find('确认应用导入').fire('click');
+  } }); await openImport(env); await env.find('预览配置差异').fire('click');
+  assert.ok(env.ui.descendants(env.body).some(node => node.textContent === '目标 1 · fixture/one：新增'));
+  await env.find('确认应用导入').fire('click');
   assert.deepEqual(applied, { token: 'current-token', confirm: true, confirmRetention: true });
   assert.ok(env.ui.descendants(env.body).some(node => node.textContent.includes('保持暂停')));
+});
+
+test('config import validates local draft references and counts before building any account controls', async t => {
+  const requests = [], env = await setup(t, { api: async path => { requests.push(path); return { accounts: [] }; } });
+  env.tools.appendLocal(env.body); await env.find('从本地 JSON 导入').fire('click');
+  const file = env.ui.descendants(env.body, 'input').find(input => input.type === 'file');
+  const favorite = imported.payload.favorites[0];
+  for (const favorites of [[{ ...favorite, sourceRef: '旧编号' }], [favorite, favorite],
+    Array.from({ length: 501 }, (_, i) => ({ ...favorite, sourceRef: 'target-' + (i + 1) }))]) {
+    const payload = { ...imported.payload, favorites };
+    file.files = [{ size: 60000, text: async () => JSON.stringify({ ...imported, payload }) }];
+    await file.fire('change');
+    assert.equal(env.find('预览配置差异').disabled, true);
+    assert.equal(env.find('确认应用导入').disabled, true);
+    assert.equal(env.ui.descendants(env.body, 'select').length, 0);
+  }
+  assert.deepEqual(requests, []);
 });
 
 test('configuration rebinding uses the target model and readable Key labels while skipping unavailable Keys', async t => {

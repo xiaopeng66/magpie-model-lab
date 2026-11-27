@@ -53,7 +53,8 @@ function New-InstallFixture([string]$Name, [string[]]$RemovedFiles = @(), [switc
   finally { $zip.Dispose() }
   $manifest = [ordered]@{ sha256 = (Get-FileHash -LiteralPath $archive).Hash.ToLowerInvariant(); entries = $names.Count; allMatchSource = $true; files = $names }
   Write-TestFile (Join-Path $root '.test-data/magpie-pelican-bench-1.0.4-archive-check.json') ($manifest | ConvertTo-Json -Depth 5)
-  $targets = @((Join-Path $toolsTestRoot ($Name + '-local')), (Join-Path $toolsTestRoot ($Name + '-modules')))
+  $installParent = Join-Path $toolsTestRoot ($Name + '-installation')
+  $targets = @((Join-Path $installParent 'local'), (Join-Path $installParent 'modules'))
   foreach ($target in $targets) { Write-TestFile (Join-Path $target 'index.mjs') 'old-version'; Write-TestFile (Join-Path $target 'extra.txt') 'preserved-extra' }
   $log = Join-Path $toolsTestRoot ($Name + '-cli.log')
   $cli = Join-Path $toolsTestRoot ($Name + '-cli.ps1')
@@ -158,9 +159,30 @@ try {
     Check ((Get-FileHash -LiteralPath $archive).Hash -eq $hash) 'Existing ZIP was changed'
   }
   Invoke-Case '016 successful replacement keeps extras and enables after both directories validate' {
-    $fixture = New-InstallFixture 'install-success'; & $fixture.installer | Out-Null
+    $fixture = New-InstallFixture 'install-success'; $priorBackups = @(); $priorOrdinal = 0
+    foreach ($target in $fixture.targets) {
+      $parent = [IO.Path]::GetDirectoryName($target)
+      foreach ($age in 1..3) {
+        $path = Join-Path $parent ('.magpie-model-lab-backup-' + [Guid]::NewGuid().ToString('N'))
+        Write-TestFile (Join-Path $path 'index.mjs') "prior-$age"
+        $lastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-$age).AddTicks(-$priorOrdinal++)
+        $item = Get-Item -LiteralPath $path -Force; $item.LastWriteTimeUtc = $lastWriteTimeUtc
+        $priorBackups += [pscustomobject]@{ path = $path; age = $age; parent = $parent; lastWriteTimeUtc = $lastWriteTimeUtc }
+      }
+    }
+    $result = & $fixture.installer
     foreach ($target in $fixture.targets) { Check ((Get-Content -LiteralPath (Join-Path $target 'index.mjs') -Raw) -eq 'new-version') 'A target did not update'; Check ((Get-Content -LiteralPath (Join-Path $target 'extra.txt') -Raw) -eq 'preserved-extra') 'Extra installed files were lost' }
     Check ((Get-Content -LiteralPath $fixture.log) -join ',' -eq 'off,on') 'Unexpected enable/disable sequence'
+    Check (@($result.backupCleanupWarnings).Count -eq 0) 'Successful replacement reported backup cleanup errors'
+    foreach ($parent in @($fixture.targets | ForEach-Object { [IO.Path]::GetDirectoryName($_) } | Select-Object -Unique)) {
+      $backups = @(Get-ChildItem -LiteralPath $parent -Directory -Force | Where-Object { $_.Name -match '^\.magpie-model-lab-backup-[a-f0-9]{32}$' })
+      $currentBackups = @($result.backups | Where-Object { [IO.Path]::GetDirectoryName($_) -eq $parent })
+      $newestOld = $priorBackups | Where-Object { $_.parent -eq $parent } | Sort-Object lastWriteTimeUtc -Descending | Select-Object -First 1
+      Check ($backups.Count -eq ($currentBackups.Count + 1)) "Successful replacements must retain every current rollback backup and only the newest prior backup per directory (actual=$($backups.Count), current=$($currentBackups.Count), names=$($backups.Name -join ','))"
+      foreach ($current in $currentBackups) { Check (Test-Path -LiteralPath $current) 'A current rollback backup was pruned during successful replacement' }
+      Check (Test-Path -LiteralPath $newestOld.path) 'The newest prior backup was not retained'
+      foreach ($old in $priorBackups | Where-Object { $_.parent -eq $parent -and $_.path -ne $newestOld.path }) { Check (-not (Test-Path -LiteralPath $old.path)) 'An older redundant backup was not pruned' }
+    }
   }
   Invoke-Case '016 explicit removed files disappear from both targets while other extras survive' {
     $removed = @('ui/batch-summary.mjs','tests/batch-summary.test.mjs','tests/summary-ui.test.mjs')
@@ -218,7 +240,7 @@ try {
     $fixture = New-InstallFixture 'rollback-failure'; $global:labToolsTestFault = 'rollback-fails'
     try { & $fixture.installer | Out-Null; throw 'Expected rollback failure' } catch { Check ($_.Exception.Message -notmatch 'Expected rollback failure') 'Rollback failure was not injected' }
     Check ((Get-Content -LiteralPath $fixture.log) -join ',' -eq 'off') 'The plugin was enabled after rollback failed'
-    $backups = @(Get-ChildItem -LiteralPath $toolsTestRoot -Directory -Force | Where-Object { $_.Name -like '.magpie-model-lab-backup-*' -and (Test-Path -LiteralPath (Join-Path $_.FullName 'index.mjs')) })
+    $backups = @(Get-ChildItem -LiteralPath ([IO.Path]::GetDirectoryName($fixture.targets[0])) -Directory -Force | Where-Object { $_.Name -like '.magpie-model-lab-backup-*' -and (Test-Path -LiteralPath (Join-Path $_.FullName 'index.mjs')) })
     Check (@($backups | Where-Object { (Get-Content -LiteralPath (Join-Path $_.FullName 'index.mjs') -Raw) -eq 'old-version' }).Count -gt 0) 'No intact old backup remains'
   }
   Invoke-Case '016 source/archive mismatch is rejected before disabling or touching targets' {

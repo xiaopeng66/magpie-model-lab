@@ -23,11 +23,13 @@ import { createChangelog } from './changelog.mjs';
   const token = document.querySelector('meta[name="pelican-token"]')?.content || "";
   const models = new Map(), selected = new Map(), selectedAccounts = new Map(), runs = new Map(), cards = new Map();
   const removed = new Set(), deleting = new Set(), historyItems = new Map(), pendingRenders = new Set(), previewCards = new WeakMap();
+  const removedRunLimit = 256;
   const historyDays = new Map(), runningItems = new Map();
   const repeatedLayouts = new WeakMap();
   let historyGroups = new Map(), historyKeys = new Map(), dailyPreview = null, historyTimeZone;
   let historyPosition = null, historyScrollFrame = null;
   let resultDetail = null;
+  const gifDrafts = new Map();
   const views = {
     current: { batchId: "", ids: [], recentIds: [], results: "results", scroll: "preview-scroll", note: "batch-note", empty: "empty-state", cancel: "cancel-all" },
     fingerprint: { batchId: "", ids: [], recentIds: [], results: "fingerprint-results", scroll: "fingerprint-scroll", note: "fingerprint-note", empty: "fingerprint-empty", cancel: "fingerprint-cancel" },
@@ -197,7 +199,7 @@ import { createChangelog } from './changelog.mjs';
 
   function retentionNote(days) { text($("retention-note"), cleanupPaused ? "清理已暂停" : days === null ? "永久保留" : `保留 ${days === undefined ? 7 : days} 天`); }
   function applyAnnotation(value, updateHistory = true) {
-    if (!value || !Number.isSafeInteger(value.revision) || value.revision < 0 || !value.runId) return;
+    if (!value || !Number.isSafeInteger(value.revision) || value.revision < 0 || !value.runId || removed.has(value.runId)) return;
     annotationRevision = Math.max(annotationRevision, value.revision);
     if (value.revision < (annotationRevisions.get(value.runId) ?? -1)) return;
     annotationRevisions.set(value.runId, value.revision);
@@ -215,7 +217,7 @@ import { createChangelog } from './changelog.mjs';
   function openLocalSettings() {
     const content = favoritesUI.openDrawer("本地设置", $("local-settings"), "compact", () => { localSettingsPanel = null; updateParameterRecovery = null; });
     content.classList.add("phase-tool-content");
-    content.append(node("p", "help", "按类别调整插件运行。历史保留时间可在“历史记录”页设置。"));
+    content.append(node("p", "help", "历史保留时间可在“历史记录”页设置。"));
     const runtime = node("div", "phase-local-runtime");
     if (settingsUI.snapshot().capabilities.progressNotice) {
       const group = node("section", "phase-tool-section"), body = node("div", "phase-form-body"), label = node("label", "check-row"), enabled = node("input"), feedback = node("p", "help");
@@ -241,7 +243,7 @@ import { createChangelog } from './changelog.mjs';
       actions.hidden = Boolean(snapshot.recoveryError);
     };
     updateParameterRecovery(); labTools.appendLocal(content, { runtime });
-    $("drawer-footer").append(button("完成", () => favoritesUI.closeDrawer()));
+    $("drawer-footer").append(button("关闭", () => favoritesUI.closeDrawer()));
   }
   function openHistoryRetention() {
     if ($("history-retention").disabled) return;
@@ -770,10 +772,19 @@ import { createChangelog } from './changelog.mjs';
     if (card) { if (card.zone) { previewObserver?.unobserve(card.zone); visibilityObserver?.unobserve(card.zone); } card.root.remove(); cards.delete(key); }
   }
 
-  function removeRuns(ids) {
+  function removeRuns(ids, protectLateUpdates = true) {
     const affectsExport = exportedBatch && ids.some(id => historyKeys.get(id) === exportedBatch);
     if (resultDetail && ids.includes(resultDetail.id)) favoritesUI.closeDrawer();
-    for (const id of ids) { removed.add(id); runs.delete(id); runtimeClock.forget(id); pendingRenders.delete(id); }
+    for (const id of ids) {
+      if (protectLateUpdates) {
+        removed.delete(id); removed.add(id);
+        if (removed.size > removedRunLimit) removed.delete(removed.values().next().value);
+      } else removed.delete(id);
+      runs.delete(id); runtimeClock.forget(id); pendingRenders.delete(id);
+      annotationByRun.delete(id); annotationRevisions.delete(id); annotationLocalRevisions.delete(id);
+      const gif = gifDrafts.get(id); gifDrafts.delete(id);
+      if (gif?.objectUrl) { URL.revokeObjectURL(gif.objectUrl); gif.objectUrl = ""; }
+    }
     for (const [name, view] of Object.entries(views)) {
       for (const id of ids) removeCard(id, name);
       view.ids = view.ids.filter(id => runs.has(id));
@@ -1074,8 +1085,18 @@ import { createChangelog } from './changelog.mjs';
     const message = failure ? node("pre", "source-view") : node("p", "form-error");
     const detail = { id: run.id, card, kind, tabs: new Map(), usage: makeUsage(), source: node("pre", "source-view"), message, failure, elapsed: node("span"), phase: node("span", "running-label") };
     const [name, provider] = resultNames(run);
+    const releaseGIF = () => {
+      const gif = detail.gif;
+      if (!gif) return;
+      gif.closed = true; gif.controller?.abort();
+      if (gif.prepared) { gifDrafts.set(detail.id, gif); return; }
+      if (gif.objectUrl) { URL.revokeObjectURL(gif.objectUrl); gif.objectUrl = ""; }
+      if (gif.id && !gif.prepared && !gif.busy) { const old = gif.id; gif.id = ""; api(`api/gifs/${old}/delete`, { method: "POST", body: "{}" }).catch(() => {}); }
+      if (gif.pendingId && !gif.prepared) { const pending = gif.pendingId; gif.pendingId = ""; api(`api/gifs/${pending}/delete`, { method: "POST", body: "{}" }).catch(() => {}); }
+    };
     const content = favoritesUI.openDrawer({ pelican: "动画详情", fingerprint: "指纹详情", candy: "糖果结果" }[kind], origin, "reading", () => {
       if (detail.preview) previewObserver?.unobserve(detail.preview.zone);
+      releaseGIF();
       detail.progressView?.dispose();
       resultDetail = null;
     });
@@ -1100,6 +1121,7 @@ import { createChangelog } from './changelog.mjs';
       try { await navigator.clipboard.writeText(copyText); if (resultDetail === detail && detail.mode === mode) text(detail.copy, "已复制"); }
       catch { if (resultDetail === detail && detail.mode === mode) { detail.fallback.hidden = false; detail.fallback.value = copyText; detail.fallback.focus(); detail.fallback.select(); } }
     }, "primary");
+    if (kind === "pelican") wireGIF(detail);
     $("drawer-tools").append(detail.copy);
     detail.fallback = node("textarea", "source-view"); detail.fallback.readOnly = true; detail.fallback.hidden = true; detail.fallback.setAttribute("aria-label", "请手动复制");
     detail.source.setAttribute("tabindex", "0");
@@ -1107,6 +1129,7 @@ import { createChangelog } from './changelog.mjs';
     detail.parameters = node("p", "help detail-evidence"); detail.file = node("p", "path");
     detail.insights = createResultInsights(document, { onSource: openSourceRecord, timeZone: historyTimeZone });
     content.append(node("h3", "detail-name", name), metadata, detail.usage, detail.insights.root, tabs);
+    if (detail.gifPanel) content.append(detail.gifPanel);
     detail.progressView = createRunProgressView(document, { readState: () => {
       const current = runs.get(id); return current ? { run: current, timings: runtimeClock.read(current), noticesEnabled: settingsUI.snapshot().progressNotice.enabled, connected: progressConnected } : null;
     }, timers: { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: id => clearTimeout(id) } }); content.append(detail.progressView.root);
@@ -1126,7 +1149,6 @@ import { createChangelog } from './changelog.mjs';
     }); detail.protect.hidden = !annotationsAvailable && !annotationsError;
     detail.protectionNote.hidden = !annotationsAvailable && !annotationsError;
     detail.protect.className = "record-protect"; $("drawer-tools").append(detail.protect); content.append(detail.protectionNote);
-    if (notesAvailable) { detail.notes = notesUI.open(id); content.append(detail.notes.root); }
     if (failure) {
       failure.append(node("summary", "", "原始错误详情"), message);
       failure.open = fromError; failure.hidden = true;
@@ -1149,6 +1171,7 @@ import { createChangelog } from './changelog.mjs';
     detail.retry = button("重试读取", () => { run.loadError = ""; return renderResultDetail(); });
     content.append(detail.retry);
     if (kind === "fingerprint") { detail.ranking = node("div", "fingerprint-ranking"); content.append(detail.ranking); }
+    if (notesAvailable) { detail.notes = notesUI.open(id); content.append(detail.notes.root); }
     content.append(detail.stats, detail.parameters, detail.file);
     if (!card && kind === "candy") {
       detail.cancel = button("取消本次", async () => {
@@ -1170,6 +1193,125 @@ import { createChangelog } from './changelog.mjs';
     return loaded;
   }
 
+  function forgetGIF(id, reason) {
+    const stale = new Set([...gifDrafts].filter(([, gif]) => gif.id === id).map(([, gif]) => gif));
+    for (const [runId, gif] of gifDrafts) if (gif.id === id) gifDrafts.delete(runId);
+    const detail = resultDetail?.gif?.id === id ? resultDetail : null;
+    if (detail) stale.add(detail.gif);
+    for (const gif of stale) {
+      if (gif.objectUrl) URL.revokeObjectURL(gif.objectUrl);
+      gif.objectUrl = ""; gif.id = ""; gif.prepared = false; gif.copyFeedback = null;
+    }
+    if (detail) {
+      detail.gifImage.removeAttribute("src"); detail.gifImage.hidden = true; detail.gifPanel.hidden = false;
+      text(detail.gifState, reason); detail.gifButtonUpdate();
+    }
+  }
+
+  function wireGIF(detail) {
+    const gif = detail.gif = gifDrafts.get(detail.id) || { id: "", objectUrl: "", busy: false, prepared: false, closed: false, copyFeedback: null };
+    gif.closed = false;
+    detail.gifImage = node("img", "gif-preview"); detail.gifImage.alt = "动画 GIF 预览"; detail.gifImage.hidden = !gif.objectUrl;
+    if (gif.objectUrl) detail.gifImage.src = gif.objectUrl;
+    detail.gifState = node("p", "help gif-state"); detail.gifState.setAttribute("role", "status");
+    if (gif.prepared) text(detail.gifState, gif.copyFeedback?.tone === "error" ? "上次复制未成功；临时 GIF 仍可重试，或在使用完毕后清理。" : "此 GIF 已复制到剪贴板。临时目录最多保留 5 个 GIF，新生成时会删除最旧的；文件也会在 24 小时后过期。使用完毕后可清理临时 GIF。");
+    detail.gifPanel = node("section", "gif-panel"); detail.gifPanel.hidden = !gif.id;
+    detail.gifPanel.append(detail.gifImage, detail.gifState);
+    detail.gifActions = node("div", "gif-actions"); detail.gifPanel.append(detail.gifActions);
+    detail.gifSave = button("另存为 GIF", () => act("save"), "primary gif-save");
+    detail.gifCopy = button("复制到剪贴板", () => act("copy"), "gif-copy");
+    detail.gifCopyFeedback = node("span", "gif-copy-feedback");
+    detail.gifCopyFeedback.setAttribute("role", "status"); detail.gifCopyFeedback.setAttribute("aria-live", "polite"); detail.gifCopyFeedback.setAttribute("aria-atomic", "true"); detail.gifCopyFeedback.hidden = true;
+    detail.gifRemove = button("清理临时 GIF", () => act("remove"), "quiet gif-remove");
+    detail.gifSave.title = "选择位置永久保存 GIF";
+    detail.gifCopy.title = "复制 GIF 文件，可在支持文件粘贴的应用中粘贴";
+    detail.gifActions.append(detail.gifSave, detail.gifCopy, detail.gifCopyFeedback, detail.gifRemove);
+    const showCopyFeedback = (tone, message) => {
+      gif.copyFeedback = { tone, message };
+      detail.gifCopyFeedback.setAttribute("data-tone", tone); detail.gifCopyFeedback.setAttribute("aria-live", tone === "error" ? "assertive" : "polite");
+      text(detail.gifCopyFeedback, message); detail.gifCopyFeedback.hidden = false;
+    };
+    const clearCopyFeedback = () => {
+      gif.copyFeedback = null; detail.gifCopyFeedback.hidden = true; detail.gifCopyFeedback.removeAttribute("data-tone");
+      detail.gifCopyFeedback.setAttribute("aria-live", "polite"); text(detail.gifCopyFeedback, "");
+    };
+    if (gif.copyFeedback) showCopyFeedback(gif.copyFeedback.tone, gif.copyFeedback.message);
+    detail.gifButton = button("生成 GIF", () => generate(), "gif-generate");
+    detail.gifButton.title = "从已完成的动画生成 4 秒 GIF（960×600，25 帧/秒）；最多保留 5 个，新生成时自动删除最旧文件";
+    detail.gifButtonUpdate = () => {
+      const run = runs.get(detail.id), canGenerate = run?.status === "completed" && run.loaded && !run.loadError && Boolean(run.html);
+      detail.gifButton.hidden = !canGenerate;
+      detail.gifButton.disabled = gif.busy || gif.prepared || !canGenerate;
+      detail.gifButton.setAttribute("aria-busy", String(gif.busy));
+      text(detail.gifButton, gif.busy ? gif.controller ? "正在生成 GIF…" : "正在处理 GIF…" : gif.id ? "重新生成 GIF" : "生成 GIF");
+      for (const control of [detail.gifSave, detail.gifCopy, detail.gifRemove]) control.disabled = gif.busy || !gif.id;
+    };
+    $("drawer-tools").append(detail.gifButton);
+    const expireUnshared = () => {
+      if (gif.closed && gif.id && !gif.prepared) { const old = gif.id; gif.id = ""; api(`api/gifs/${old}/delete`, { method: "POST", body: "{}" }).catch(() => {}); }
+    };
+    const act = async action => {
+      if (!gif.id || gif.busy) return;
+      gif.busy = true;
+      // A lost response can follow a successful clipboard write, so keep this file until explicit cleanup.
+      if (action === "copy") { clearCopyFeedback(); gif.prepared = true; gifDrafts.set(detail.id, gif); }
+      detail.gifButtonUpdate();
+      try {
+        if (action === "remove") {
+          await api(`api/gifs/${gif.id}/delete`, { method: "POST", body: "{}" });
+          if (gif.objectUrl) URL.revokeObjectURL(gif.objectUrl);
+          gifDrafts.delete(detail.id);
+          gif.objectUrl = ""; gif.id = ""; gif.prepared = false; gif.copyFeedback = null; detail.gifImage.removeAttribute("src"); detail.gifImage.hidden = true; detail.gifPanel.hidden = true; text(detail.gifState, "临时 GIF 已删除；已另存的文件保留。");
+        } else if (action === "copy") {
+          await api(`api/gifs/${gif.id}/copy`, { method: "POST", body: "{}" });
+          showCopyFeedback("success", "复制成功");
+          if (resultDetail === detail) text(detail.gifState, "GIF 文件已复制到剪贴板，可在支持文件粘贴的应用中粘贴。使用完毕后可清理临时 GIF；清理后将无法继续粘贴该临时文件。");
+        } else {
+          const saved = await api(`api/gifs/${gif.id}/save`, { method: "POST", body: "{}" });
+          if (resultDetail === detail) text(detail.gifState, saved.cancelled ? "已取消保存；临时 GIF 仍保留。" : `GIF 已另存到：${saved.path}`);
+        }
+      } catch (err) {
+        if (err.status === 404) forgetGIF(gif.id, "临时 GIF 已过期或因保留数量限制被清理，请重新生成。");
+        else if (resultDetail === detail) text(detail.gifState, `${err.message}；临时 GIF 仍可重试或手动删除。`);
+        if (action === "copy") showCopyFeedback("error", err.status === 404 ? "复制失败：临时 GIF 已过期或被清理，请重新生成。" : `复制失败：${err.message || "请重试"}`);
+      }
+      finally { gif.busy = false; expireUnshared(); if (resultDetail?.gif === gif) resultDetail.gifButtonUpdate(); }
+    };
+    const generate = async () => {
+      const run = runs.get(detail.id);
+      if (gif.busy || gif.prepared || run?.status !== "completed" || !run.loaded || run.loadError || !run.html) return;
+      const previous = gif.id;
+      let expired = false;
+      gif.busy = true; gif.closed = false; gif.controller = new AbortController(); detail.gifPanel.hidden = false;
+      clearCopyFeedback();
+      text(detail.gifState, "正在本机隔离浏览器中逐帧渲染高清 GIF，生成可能需要十几秒…"); detail.gifButtonUpdate();
+      try {
+        const created = await api(`api/runs/${detail.id}/gif`, { method: "POST", body: "{}", signal: gif.controller.signal });
+        gif.pendingId = created.id;
+        for (const removed of created.removed || []) forgetGIF(removed, "此临时 GIF 因保留最新 5 个文件而已清理，请重新生成。");
+        if (gif.closed || resultDetail !== detail) { gif.pendingId = ""; await api(`api/gifs/${created.id}/delete`, { method: "POST", body: "{}" }).catch(() => {}); return; }
+        const response = await request(`api/gifs/${created.id}/file`, { headers: { "content-type": "application/json" }, signal: gif.controller.signal });
+        if (!response.ok) {
+          if (response.status === 404) { expired = true; forgetGIF(created.id, "临时 GIF 已过期或因保留数量限制被清理，请重新生成。"); }
+          throw new Error("GIF 预览读取失败，请重新生成。");
+        }
+        const objectUrl = URL.createObjectURL(await response.blob());
+        if (gif.closed || resultDetail !== detail) { URL.revokeObjectURL(objectUrl); gif.pendingId = ""; await api(`api/gifs/${created.id}/delete`, { method: "POST", body: "{}" }).catch(() => {}); return; }
+        gif.pendingId = "";
+        if (gif.objectUrl) URL.revokeObjectURL(gif.objectUrl);
+        gif.id = created.id; gif.objectUrl = objectUrl;
+        detail.gifImage.src = objectUrl; detail.gifImage.hidden = false; detail.gifImage.alt = `GIF 预览；文件 ${created.name}`;
+        const dimensions = created.width && created.height ? ` · ${created.width}×${created.height}` : "";
+        text(detail.gifState, `已生成 ${Math.ceil(created.size / 1024)} KiB${dimensions} · ${(created.durationMs || 4000) / 1000} 秒 · ${created.fps || 25} 帧/秒。临时目录最多保留 5 个 GIF，新生成时会删除最旧的；文件也会在 24 小时后过期。复制后可粘贴到支持文件的应用中。`);
+        if (previous) await api(`api/gifs/${previous}/delete`, { method: "POST", body: "{}" }).catch(() => {});
+      } catch (err) {
+        if (gif.pendingId) { const pending = gif.pendingId; gif.pendingId = ""; api(`api/gifs/${pending}/delete`, { method: "POST", body: "{}" }).catch(() => {}); }
+        if (resultDetail === detail && !gif.closed && !expired) text(detail.gifState, `${err.name === "AbortError" ? "GIF 生成已取消" : err.message}；可重试。`);
+      }
+      finally { gif.busy = false; gif.controller = null; expireUnshared(); if (resultDetail === detail) detail.gifButtonUpdate(); }
+    };
+  }
+
   function renderResultDetail() {
     const detail = resultDetail, run = runs.get(detail?.id); if (!run) return;
     const { mode, kind, card, preview } = detail;
@@ -1178,6 +1320,7 @@ import { createChangelog } from './changelog.mjs';
     if (detail.protect) { text(detail.protect, annotationByRun.get(detail.id)?.protected ? "解除记录保护" : "保护此记录"); detail.protect.disabled = detail.protectSaving || !annotationsAvailable; detail.protect.setAttribute("aria-pressed", String(Boolean(annotationByRun.get(detail.id)?.protected))); detail.protect.title = annotationByRun.get(detail.id)?.protected ? "此记录已保护，点击解除；保护期间跳过自动和手动清理" : "保护此记录，使其跳过自动和手动清理"; if (annotationsError) text(detail.protectionNote, annotationsError); }
     detail.retest.disabled = active(run) || creating;
     detail.retest.title = active(run) ? "测试结束后可按原条件复测" : "读取本条原条件，核对后重新测试";
+    detail.gifButtonUpdate?.();
     for (const [key, tab] of detail.tabs) tab.setAttribute("aria-pressed", String(key === mode));
     renderUsage(detail.usage, run); renderStats(detail, run);
     text(detail.elapsed, `耗时 ${detail.metrics[0].textContent}`);
@@ -1201,7 +1344,7 @@ import { createChangelog } from './changelog.mjs';
     } else if (kind === "fingerprint") {
       const info = run.fingerprint || {};
       output = mode === "route" ? JSON.stringify((run.samples || []).map(sample => sample.provenance || {}), null, 2) : mode === "analysis" ? (run.analysis ? JSON.stringify(run.analysis, null, 2) : "") :
-        (run.samples || []).map((sample, index) => `采样 ${index + 1} · ${sample.count ?? "—"}/${sample.expected_count ?? run.challenges?.[index]?.expected_count ?? "—"} · ${sampleStates[sample.state] || "状态未知"}\n${sample.raw_text || "暂无回答"}${sample.error ? "\n" + sample.error : ""}`).join("\n\n");
+        (run.samples || []).map((sample, index) => `采样 ${index + 1} · ${sample.count ?? "—"}/${sample.expected_count ?? run.challenges?.[index]?.expected_count ?? "—"} · ${sampleStates[sample.state] || "状态不可用"}\n${sample.raw_text || "暂无回答"}${sample.error ? "\n" + sample.error : ""}`).join("\n\n");
       if (run.analysis !== detail.renderedAnalysis) {
         detail.renderedAnalysis = run.analysis; detail.ranking.replaceChildren();
         for (const [index, item] of (run.analysis?.results || []).slice(0, 5).entries()) { const row = node("div", "ranking-row"), name = item.display_name || item.model || "未命名候选"; row.title = item.model || name;
@@ -1343,7 +1486,8 @@ import { createChangelog } from './changelog.mjs';
         if (eventName === "hello") {
           progressConnected = true;
           const liveIds = new Set(value.runs.map(run => run.id));
-          removeRuns([...knownIds].filter(id => !liveIds.has(id)));
+          for (const id of removed) if (!liveIds.has(id)) removed.delete(id);
+          removeRuns([...knownIds].filter(id => !liveIds.has(id)), false);
           for (const run of value.runs) updateRun(run, false); renderHistory();
           applyAnnotationProjection(value.annotations);
           if (settingsUI.snapshot().capabilities.memory) settingsUI.invalidate();
@@ -1351,7 +1495,7 @@ import { createChangelog } from './changelog.mjs';
           favoritesUI.refresh();
         }
         if (eventName === "run") { updateRun(value.run); if (value.run.source === "automatic" && !active(value.run)) favoritesUI.refresh(); }
-        if (eventName === "removed") removeRuns(value.ids);
+        if (eventName === "removed") removeRuns(value.ids, true);
         if (eventName === "favorites") favoritesUI.refresh();
         if (eventName === "annotation") applyAnnotation(value);
         if (eventName === "settings_changed" && settingsUI.snapshot().capabilities.memory) settingsUI.invalidate();
@@ -1452,9 +1596,15 @@ import { createChangelog } from './changelog.mjs';
   function renderBank(value) {
     const ready = value?.state === "ready";
     $("bank-status").dataset.state = value?.state || "missing";
-    text($("bank-status"), bankUpdating ? "正在更新参考库…" : ready ? `参考库就绪 · ${value.meta?.modelCount || 0} 模型` : "参考库未下载");
-    text($("bank-meta"), value?.meta ? `${value.meta.builtAt}\nSDK ${value.meta.sdkVersion || "0.2.0"}\n${value.meta.sha256}` : "首次检测前自动下载，也可点击更新。");
-    $("bank-refresh").setAttribute("aria-label", ready ? "更新参考库" : "下载参考库"); $("bank-refresh").title = ready ? "更新参考库" : "下载参考库";
+    text($("bank-status"), bankUpdating ? "正在更新参考库…" : ready ? `参考库就绪 · ${value.meta?.modelCount || 0} 模型${value?.checkError ? " · 检查失败" : value?.error ? " · 更新失败" : ""}` : "参考库未下载");
+    const checkTime = time => new Date(time).toLocaleString();
+    const checking = value?.checkingUpdate ? "正在检查更新…" : value?.lastCheckedAt ? `最近检查：${checkTime(value.lastCheckedAt)}` : "";
+    const checkError = value?.checkError ? `检查失败：${value.checkError}\n${value.lastSuccessfulCheckAt ? `最近成功：${checkTime(value.lastSuccessfulCheckAt)}` : "尚未成功检查"}；约 5 分钟后自动重新检查，也可点击更新。` : "";
+    const refreshError = value?.error ? `更新失败：${value.error}\n约 5 分钟后自动重新检查，也可点击更新重试。` : "";
+    text($("bank-meta"), [value?.meta ? `${value.meta.builtAt}\nSDK ${value.meta.sdkVersion || "0.2.0"}\n${value.meta.sha256}` : "首次检测前自动下载，也可点击更新。", checking, checkError, refreshError].filter(Boolean).join("\n"));
+    if (typeof value?.updateAvailable === "boolean") $("bank-update-badge").hidden = !value.updateAvailable;
+    const available = !$("bank-update-badge").hidden;
+    $("bank-refresh").setAttribute("aria-label", available ? "有更新，更新参考库" : ready ? "更新参考库" : "下载参考库"); $("bank-refresh").title = available ? "上游参考库有更新，点击下载" : ready ? "更新参考库" : "下载参考库";
   }
   $("bank-refresh").addEventListener("click", async () => {
     if (!fingerprintAvailable || bankUpdating) return;
@@ -1616,9 +1766,14 @@ import { createChangelog } from './changelog.mjs';
   $("clear-all").addEventListener("click", () => cleanup("all"));
   $("clear-before").addEventListener("click", () => cleanup("before"));
   const catalogInterval = 5 * 60 * 1000;
-  let nextCatalogRefresh = Infinity;
+  let nextCatalogRefresh = Infinity, nextBankStatus = Infinity, bankStatusLoading = false;
   function refreshCatalogIfDue() {
-    if (initialized && !bootstrapping && !reconnecting && document.visibilityState !== 'hidden' && Date.now() >= nextCatalogRefresh) return refreshCatalog(false);
+    if (!initialized || bootstrapping || reconnecting || document.visibilityState === 'hidden') return;
+    if (fingerprintAvailable && !bankStatusLoading && Date.now() >= nextBankStatus) {
+      nextBankStatus = Date.now() + catalogInterval; bankStatusLoading = true;
+      api("api/fingerprint/bank").then(renderBank).catch(() => {}).finally(() => { bankStatusLoading = false; });
+    }
+    if (Date.now() >= nextCatalogRefresh) refreshCatalog(false);
   }
   async function refreshCatalog(manual) {
     const control = $("refresh-models"); if (control.disabled) return; control.disabled = true;
@@ -1723,7 +1878,7 @@ import { createChangelog } from './changelog.mjs';
     text($("candy-prompt"), boot.candyPrompt || "重新开启插件后加载题面"); text($("candy-version"), `可选形状版 · ${boot.candyVersion || "v1"}`);
     experimentControls.load(boot);
     fingerprintAvailable = boot.fingerprintAvailable === true; batchCancel = boot.batchCancel === true; batchExport = boot.batchExport === true; retestAvailable = boot.retestAvailable === true;
-    renderBank(boot.bankStatus); updateSettings();
+    renderBank(boot.bankStatus); nextBankStatus = Date.now() + 30000; updateSettings();
     openDataDir = boot.openDataDir === true; $("open-data-dir").disabled = !openDataDir;
     $("open-data-dir").title = openDataDir ? `打开保存文件夹：${boot.dataDir}` : "重新开启插件后可打开保存文件夹";
     $("toggle-data-dir").title = boot.dataDir; $("data-dir").hidden = true;

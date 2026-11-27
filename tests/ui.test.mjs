@@ -198,6 +198,18 @@ test("cleanup controls send all or a UTC cutoff and update history after the res
   assert.deepEqual(calls[1], { mode: "before", before: new Date("2026-11-13T08:30").toISOString() });
 });
 
+test("bulk cleanup keeps only a bounded set of IDs for late-event protection", async () => {
+  const records = Array.from({ length: 300 }, (_, index) => ({ ...run, id: `retained-${index}`, batchId: `retained-${index}`, source: "automatic", hasHTML: false }));
+  const ids = records.map(item => item.id);
+  const ui = await uiHarness({ bootstrap: boot(records), trackCollections: true, detail: () => ({}), cleanup: async () => ({ removed: ids, skippedActive: 0, skippedProtected: 0, errors: [], annotationErrors: [] }) });
+  await waitFor(() => ui.elements.get("history-count").textContent !== "");
+  await ui.elements.get("manage-history").fire("click");
+  const request = await confirmClick(ui, ui.elements.get("clear-all"));
+  await request.completion;
+  const tombstones = ui.trackedSets.find(set => set.size === 256 && [...set].every(value => ids.includes(value)));
+  assert.ok(tombstones, "Long-lived pages must cap late-event tombstones at 256 run IDs");
+});
+
 test("bulk cleanup toggles to Close, preserves its cutoff and restores focus when closed", async () => {
   const ui = await uiHarness({ bootstrap: boot([]), detail: () => run });
   await waitFor(() => ui.elements.get("prompt").value === "test");
@@ -803,6 +815,168 @@ test("animation details use the shared right drawer with preview, source and ori
   await drawer.fire("keydown", { key: "Escape" });
   assert.equal(drawer.hidden, true);
   assert.equal(ui.document.activeElement, toggle);
+});
+
+test("animation detail offers one clipboard action and keeps the copied file available", async () => {
+  const gifId = "ea4c00a9-bc67-4b1f-94a5-ef550621425b", copies = [], removed = [];
+  const ui = await uiHarness({ bootstrap: boot([run]), detail: async () => ({ ...run, html: FIXTURE_HTML, content: FIXTURE_HTML, previewUrl: `preview/${id}?key=test` }),
+    gifExport: async (_path, options) => ({ id: gifId, size: 12000, name: "magpie-animation-test.gif", width: 960, height: 600, fps: 25, frames: 100, durationMs: 4000, options }), gifFile: async () => new Uint8Array([71, 73, 70, 56, 57, 97]),
+    copyGif: async (_path, body) => { copies.push(body); return { copied: true }; }, saveGif: async () => ({ path: "C:\\Users\\tester\\animation.gif" }),
+    removeGif: async path => { removed.push(path); return { removed: true }; } });
+  await waitFor(() => ui.descendants(ui.elements.get("results"), "iframe").length === 1);
+  await control(ui, "源码与详情").fire("click");
+  const gifButton = drawerControl(ui, "生成 GIF"), copyButton = drawerControl(ui, "复制源码");
+  const tools = ui.elements.get("drawer-tools").children;
+  assert.ok(tools.indexOf(gifButton) < tools.indexOf(copyButton), "The one-click export sits before Copy Source");
+  await waitFor(() => !gifButton.disabled);
+  const generating = gifButton.fire("click");
+  await generating;
+  const gifPanel = ui.elements.get("drawer-content").children.find(element => element.className === "gif-panel");
+  assert.equal(gifPanel.hidden, false); assert.match(ui.descendants(gifPanel, "p")[0].textContent, /最多保留 5 个/);
+  assert.match(ui.descendants(gifPanel, "p")[0].textContent, /960×600/);
+  assert.equal(gifButton.disabled, false);
+  const actions = ui.descendants(gifPanel, "button");
+  assert.equal(actions.length, 3, "Only Save, Copy to Clipboard and Cleanup remain");
+  const prepare = drawerControl(ui, "复制到剪贴板"); assert.ok(prepare); await prepare.fire("click");
+  assert.deepEqual(copies, [{}]);
+  assert.match(ui.descendants(gifPanel, "p")[0].textContent, /GIF 文件已复制到剪贴板/);
+  assert.equal(gifButton.disabled, true, "Once a file has been handed off, keep its path stable for the pending paste");
+  await ui.elements.get("drawer-close").fire("click");
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(removed, [], "Closing the drawer must not invalidate a GIF still referenced by the clipboard");
+  await control(ui, "源码与详情").fire("click");
+  await drawerControl(ui, "清理临时 GIF").fire("click");
+  assert.equal(removed.length, 1, "A prepared GIF remains accessible for manual cleanup after reopening its detail");
+});
+
+test("GIF cleanup hides the temporary preview and its actions", async () => {
+  const gifId = "ea4c00a9-bc67-4b1f-94a5-ef550621425b";
+  const ui = await uiHarness({ bootstrap: boot([run]), detail: async () => ({ ...run, html: FIXTURE_HTML, previewUrl: `preview/${id}?key=test` }),
+    gifExport: async () => ({ id: gifId, size: 5000, name: "animation.gif" }), gifFile: async () => new Uint8Array([71, 73, 70, 56, 57, 97]),
+    removeGif: async () => ({ removed: true }) });
+  await waitFor(() => ui.descendants(ui.elements.get("results"), "iframe").length === 1);
+  await control(ui, "源码与详情").fire("click"); await waitFor(() => !drawerControl(ui, "生成 GIF").disabled);
+  const generate = drawerControl(ui, "生成 GIF"); await generate.fire("click");
+  const panel = ui.descendants(ui.elements.get("drawer-content"), "section").find(element => element.className === "gif-panel");
+  assert.equal(panel.hidden, false);
+  await drawerControl(ui, "清理临时 GIF").fire("click");
+  assert.equal(panel.hidden, true, "A deleted temporary GIF should leave no stale preview or disabled actions on screen");
+  assert.equal(generate.disabled, false, "Generation is available again after cleanup");
+});
+
+test("GIF clipboard copy shows a prominent success notice beside its button", async () => {
+  const gifId = "ea4c00a9-bc67-4b1f-94a5-ef550621425b";
+  const ui = await uiHarness({ bootstrap: boot([run]), detail: async () => ({ ...run, html: FIXTURE_HTML, previewUrl: `preview/${id}?key=test` }),
+    gifExport: async () => ({ id: gifId, size: 5000, name: "animation.gif" }), gifFile: async () => new Uint8Array([71, 73, 70, 56, 57, 97]),
+    copyGif: async () => ({ copied: true }) });
+  await waitFor(() => ui.descendants(ui.elements.get("results"), "iframe").length === 1);
+  await control(ui, "源码与详情").fire("click"); await waitFor(() => !drawerControl(ui, "生成 GIF").disabled);
+  await drawerControl(ui, "生成 GIF").fire("click");
+  const panel = ui.descendants(ui.elements.get("drawer-content"), "section").find(element => element.className === "gif-panel");
+  const copyButton = drawerControl(ui, "复制到剪贴板");
+  const feedback = ui.descendants(panel, "span").find(element => element.className === "gif-copy-feedback");
+  assert.ok(feedback, "The copy action has a dedicated inline feedback element");
+  assert.equal(feedback.hidden, true, "Feedback starts hidden before a copy attempt");
+  await copyButton.fire("click");
+  assert.equal(feedback.hidden, false);
+  assert.equal(feedback.getAttribute("data-tone"), "success");
+  assert.equal(feedback.getAttribute("aria-live"), "polite");
+  assert.match(feedback.textContent, /复制成功/);
+  assert.match(ui.descendants(panel, "p")[0].textContent, /GIF 文件已复制到剪贴板/, "The existing explanatory text remains available");
+});
+
+test("deleting a run releases its copied GIF preview without deleting the clipboard file", async () => {
+  const gifId = "ea4c00a9-bc67-4b1f-94a5-ef550621425b", removed = [], annotation = { protected: true, note: "keep for audit", revision: 9 };
+  const ui = await uiHarness({ bootstrap: { ...boot([run]), annotations: { revision: 73, scopeRunIds: [id], runRevisions: { [id]: 9 }, byRunId: { [id]: annotation } } }, trackCollections: true,
+    detail: async () => ({ ...run, html: FIXTURE_HTML, previewUrl: `preview/${id}?key=test` }),
+    gifExport: async () => ({ id: gifId, size: 5000, name: "animation.gif" }), gifFile: async () => new Uint8Array([71, 73, 70, 56, 57, 97]),
+    copyGif: async () => ({ copied: true }), removeGif: async path => { removed.push(path); return { removed: true }; } });
+  await waitFor(() => ui.descendants(ui.elements.get("results"), "iframe").length === 1);
+  const revisionCaches = ui.trackedMaps.filter(map => map.get(id) === 73 || map.get(id) === 9);
+  const noteCache = ui.trackedMaps.find(map => map.get(id)?.note === annotation.note);
+  assert.equal(revisionCaches.length, 2, "Both per-run annotation revisions are cached before deletion");
+  assert.ok(noteCache, "The annotation projection is cached before deletion");
+  await control(ui, "源码与详情").fire("click"); await waitFor(() => !drawerControl(ui, "生成 GIF").disabled);
+  await drawerControl(ui, "生成 GIF").fire("click");
+  await drawerControl(ui, "复制到剪贴板").fire("click");
+  assert.equal(ui.createdObjectUrls.length, 1, "The rendered GIF preview owns a blob URL");
+  ui.event("removed", { ids: [id] });
+  await waitFor(() => ui.revokedObjectUrls.length === 1);
+  assert.deepEqual(ui.revokedObjectUrls, ui.createdObjectUrls, "Removing its run must release the in-memory GIF preview");
+  assert.ok(revisionCaches.every(map => !map.has(id)), "Both per-run annotation revision indexes must be released");
+  assert.equal(noteCache.has(id), false, "The deleted run's note/protection cache must be released");
+  assert.equal(ui.trackedSets.some(set => set.has(id) && set.testCreation.includes("events")), true, "The short-lived removal guard still blocks late events until the next authoritative snapshot");
+  assert.deepEqual(removed, [], "Deleting the run must preserve the server file referenced by the clipboard");
+});
+
+test("GIF clipboard copy shows a prominent retryable failure notice", async () => {
+  const gifId = "ea4c00a9-bc67-4b1f-94a5-ef550621425b";
+  const ui = await uiHarness({ bootstrap: boot([run]), detail: async () => ({ ...run, html: FIXTURE_HTML, previewUrl: `preview/${id}?key=test` }),
+    gifExport: async () => ({ id: gifId, size: 5000, name: "animation.gif" }), gifFile: async () => new Uint8Array([71, 73, 70, 56, 57, 97]),
+    copyGif: async () => { throw new Error("剪贴板暂不可用"); } });
+  await waitFor(() => ui.descendants(ui.elements.get("results"), "iframe").length === 1);
+  await control(ui, "源码与详情").fire("click"); await waitFor(() => !drawerControl(ui, "生成 GIF").disabled);
+  await drawerControl(ui, "生成 GIF").fire("click");
+  const panel = ui.descendants(ui.elements.get("drawer-content"), "section").find(element => element.className === "gif-panel");
+  const copyButton = drawerControl(ui, "复制到剪贴板");
+  const feedback = ui.descendants(panel, "span").find(element => element.className === "gif-copy-feedback");
+  assert.ok(feedback, "The copy action has a dedicated inline feedback element");
+  await copyButton.fire("click");
+  assert.equal(feedback.hidden, false);
+  assert.equal(feedback.getAttribute("data-tone"), "error");
+  assert.equal(feedback.getAttribute("aria-live"), "assertive");
+  assert.match(feedback.textContent, /复制失败.*剪贴板暂不可用/);
+  assert.equal(copyButton.disabled, false, "A failed copy can be retried");
+  assert.equal(panel.hidden, false, "A failed copy keeps the temporary GIF available");
+});
+
+test("GIF generation is hidden unless a completed animation has loaded", async () => {
+  for (const candidate of [
+    { ...run, status: "error", hasHTML: false, html: "" },
+    { ...run, status: "error", hasHTML: true, html: FIXTURE_HTML },
+    { ...run, status: "cancelled", hasHTML: false, html: "" },
+    { ...run, status: "truncated", hasHTML: true, html: FIXTURE_HTML },
+    { ...run, status: "running", hasHTML: false, html: "" },
+    { ...run, status: "completed", hasHTML: false, html: "" },
+  ]) {
+    const ui = await uiHarness({ bootstrap: boot([candidate]), detail: () => candidate });
+    await waitFor(() => ui.descendants(ui.elements.get("results"), "article").length === 1);
+    await control(ui, "源码与详情").fire("click");
+    const gifButton = drawerControl(ui, "生成 GIF");
+    assert.ok(gifButton, "The GIF control remains available in the detail template");
+    assert.equal(gifButton.hidden, true, `${candidate.status} without loaded animation HTML must not offer GIF generation`);
+  }
+});
+
+test("a GIF removed by the five-file retention limit can be regenerated after a 404", async () => {
+  const gifId = "ea4c00a9-bc67-4b1f-94a5-ef550621425b";
+  const ui = await uiHarness({ bootstrap: boot([run]), detail: async () => ({ ...run, html: FIXTURE_HTML, previewUrl: `preview/${id}?key=test` }),
+    gifExport: async () => ({ id: gifId, size: 5000, name: "animation.gif" }), gifFile: async () => new Uint8Array([71, 73, 70, 56, 57, 97]),
+    copyGif: async () => { throw Object.assign(new Error("GIF 临时文件不存在"), { status: 404 }); } });
+  await waitFor(() => ui.descendants(ui.elements.get("results"), "iframe").length === 1);
+  await control(ui, "源码与详情").fire("click"); await waitFor(() => !drawerControl(ui, "生成 GIF").disabled);
+  const generate = drawerControl(ui, "生成 GIF"); await generate.fire("click");
+  await drawerControl(ui, "复制到剪贴板").fire("click");
+  assert.match(ui.descendants(ui.elements.get("drawer-content"), "p").find(item => item.className === "help gif-state").textContent, /已过期或因保留数量限制被清理/);
+  assert.equal(generate.disabled, false, "A stale copied-file reference does not block a fresh GIF");
+  assert.equal(drawerControl(ui, "复制到剪贴板").disabled, true);
+});
+
+test("closing details during an uncertain clipboard handoff preserves the GIF for a later paste", async () => {
+  const gifId = "ea4c00a9-bc67-4b1f-94a5-ef550621425b", removed = [];
+  let finishCopy;
+  const ui = await uiHarness({ bootstrap: boot([run]), detail: async () => ({ ...run, html: FIXTURE_HTML, previewUrl: `preview/${id}?key=test` }),
+    gifExport: async () => ({ id: gifId, size: 5000, name: "animation.gif" }), gifFile: async () => new Uint8Array([71, 73, 70, 56, 57, 97]),
+    copyGif: () => new Promise((_resolve, reject) => { finishCopy = reject; }), removeGif: async path => { removed.push(path); return { removed: true }; } });
+  await waitFor(() => ui.descendants(ui.elements.get("results"), "iframe").length === 1);
+  await control(ui, "源码与详情").fire("click"); await waitFor(() => !drawerControl(ui, "生成 GIF").disabled);
+  await drawerControl(ui, "生成 GIF").fire("click");
+  const copying = drawerControl(ui, "复制到剪贴板").fire("click"); await waitFor(() => finishCopy);
+  await ui.elements.get("favorite-drawer").fire("keydown", { key: "Escape" });
+  finishCopy(new Error("复制响应中断")); await copying;
+  assert.deepEqual(removed, [], "The clipboard can already reference this file even if its response arrives after closing");
+  await control(ui, "源码与详情").fire("click");
+  assert.ok(drawerControl(ui, "清理临时 GIF"), "The retained file can be explicitly deleted");
 });
 
 test("animation details collapse the raw error unless opened from the error button", async () => {

@@ -57,3 +57,27 @@ test("preset management uses the existing drawer and sends a parameter snapshot 
   const controls = ui.descendants(ui.elements.get("drawer-content")), name = controls.find(e => e.getAttribute("aria-label") === "方案名称"); name.value = "Animation"; await name.fire("input");
   await ui.descendants(ui.elements.get("drawer-footer"), "button").find(e => e.textContent === "保存为新方案").fire("click"); assert.equal(saved.kind, "pelican"); assert.equal(saved.parameters.timeoutMs, 600000); assert.equal(saved.parameters.prompt, "animate"); assert.equal(Object.hasOwn(saved, "models"), false); assert.equal(Object.hasOwn(saved.parameters, "account"), false);
 });
+
+for (const action of ['new', 'switch', 'delete']) for (const cancel of ['button', 'Escape'])
+  test(`canceling preset ${action} with ${cancel} retains the draft and restores trigger focus`, async t => {
+    const state = { revision: 0, manual: Object.fromEntries(['pelican', 'candy', 'fingerprint'].map(kind => [kind, parameterDefaults(kind, 'animate')])),
+      retention: { days: 7 }, progressNotice: { enabled: true }, presets: ['one', 'two'].map(id => ({ id, name: id, kind: 'pelican', parameters: parameterDefaults('pelican', 'animate') })) };
+    let writes = 0;
+    const ui = await uiHarness({ bootstrap: { models: [], runs: [], defaultPrompt: 'animate', settings: state, settingsCapabilities: { memory: true, presets: true } },
+      settings: async (_path, options) => { if (options.body) writes++; return { settings: state }; } });
+    t.after(() => ui.closeStream());
+    await waitFor(() => !ui.elements.get('manage-presets').hidden); await ui.elements.get('manage-presets').fire('click');
+    const controls = ui.descendants(ui.elements.get('drawer-content'));
+    const pick = controls.find(control => control.getAttribute('aria-label') === '选择方案');
+    const name = controls.find(control => control.getAttribute('aria-label') === '方案名称');
+    pick.value = 'one'; await pick.fire('change'); name.value = '尚未保存的草稿'; await name.fire('input');
+    const control = action === 'switch' ? pick : controls.find(control => control.tagName === 'BUTTON' && control.textContent === (action === 'new' ? '新建方案' : '删除方案'));
+    control.focus(); if (action === 'switch') pick.value = 'two';
+    const completion = control.fire(action === 'switch' ? 'change' : 'click');
+    await waitFor(() => ui.elements.get('confirm-dialog').open);
+    await ui.elements.get(cancel === 'button' ? 'confirm-cancel' : 'confirm-dialog').fire(cancel === 'button' ? 'click' : 'cancel');
+    await completion;
+    assert.equal(control.disabled, false); assert.equal(ui.elements.get('favorite-drawer').hidden, false);
+    assert.equal(name.value, '尚未保存的草稿'); assert.equal(pick.value, 'one'); assert.equal(writes, 0);
+    assert.ok(ui.document.activeElement === control, 'The confirmation must return focus to its enabled trigger');
+  });

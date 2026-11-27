@@ -40,8 +40,39 @@ test('a failed usage refresh keeps the last observed totals and permits retry', 
   await env.find('刷新今日用量').fire('click');
   const visible = env.ui.descendants(env.panel);
   assert.ok(visible.some(node => node.tagName.toLowerCase() === 'strong' && node.textContent === '1,234,567,890'));
-  assert.ok(visible.some(node => node.textContent.includes('合成的读取失败')));
+  assert.ok(visible.some(node => !node.hidden && node.textContent.includes('已保留上次统计')));
   assert.equal(env.find('刷新今日用量').disabled, false);
+});
+
+test('a failed first usage load stops loading, does not claim cached totals, and can recover', async t => {
+  let fail = true; const env = await summaryPanel(t, () => fail);
+  const content = () => env.ui.descendants(env.panel).filter(node => !node.hidden).map(node => node.textContent);
+  assert.ok(content().some(text => text.includes('合成的读取失败')));
+  assert.ok(!content().some(text => /正在读取|已保留上次统计/.test(text)));
+  assert.equal(env.find('刷新今日用量').disabled, false);
+  fail = false;
+  await env.find('刷新今日用量').fire('click');
+  assert.ok(content().includes('1,234,567,890'));
+  assert.ok(!content().some(text => text.includes('合成的读取失败')));
+});
+
+test('a day with no requests shows one empty state instead of unknown token and source rows', async t => {
+  const env = await summaryPanel(t, () => false, { knownRequests: 0, tokens: 0, knownUsage: 0, unknownUsage: 0, providers: [], accounts: [] });
+  const visible = env.ui.descendants(env.panel);
+  assert.ok(visible.some(node => node.textContent === '今日暂无测试请求。'));
+  assert.ok(!visible.some(node => ['未提供', '来源明细'].includes(node.textContent)));
+  assert.equal(env.find('刷新今日用量').disabled, false);
+});
+
+test('a failed ledger recovery is not reported as an empty day', async t => {
+  const env = await summaryPanel(t, () => false, {
+    knownRequests: 0, tokens: 0, knownUsage: 0, unknownUsage: 0, providers: [], accounts: [],
+    partial: true, coverageStartAt: '2026-11-23T08:00:00Z', recoveryError: '用量账本读取失败',
+  });
+  const text = env.ui.descendants(env.panel).filter(node => !node.hidden).map(node => node.textContent);
+  assert.ok(text.includes('今日用量暂不可用'));
+  assert.ok(text.some(value => value.includes('用量账本读取失败')));
+  assert.ok(!text.some(value => /暂无测试请求|今日统计从/.test(value)));
 });
 
 test('daily usage exposes compact input, output, cache reads, writes and the covered hit rate', async t => {
@@ -61,3 +92,17 @@ test('missing cache detail stays unknown while an explicit cache miss displays z
     cacheWriteRequests: 0, inputRequests: 1, outputRequests: 1, cacheReadRequests: 1, cacheCoverageRequests: 1, cacheHitRate: 0 } });
   assert.ok(zero.ui.descendants(zero.panel).some(node => node.textContent === '0.00%'));
 });
+
+for (const [tokens, fixedTokens, expected] of [[0, 0, '0'], [null, 1, '—'], [100, null, '—']]) {
+  test(`automatic usage displays ${expected} when the provider total is ${tokens}`, async t => {
+    const env = await summaryPanel(t, () => false, {
+      knownRequests: 2, knownUsage: 2, unknownUsage: 0, tokens,
+      providers: [{ provider: 'fixture', knownRequests: 2, knownUsage: 2, unknownUsage: 0, tokens }],
+      accounts: [{ provider: 'fixture', accountId: 'a', knownRequests: 1, knownUsage: 1, unknownUsage: 0, tokens: fixedTokens }],
+    });
+    const row = env.ui.descendants(env.panel).find(node => node.className.includes('phase-usage-account') &&
+      env.ui.descendants(node).some(child => child.textContent === '自动分配'));
+    assert.ok(row);
+    assert.deepEqual(env.ui.descendants(row, 'strong').map(node => node.textContent), ['1', expected]);
+  });
+}

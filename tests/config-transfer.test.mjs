@@ -1,14 +1,38 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { enhancementSetup } from './enhancement-helpers.mjs';
 import { occurrence } from '../lib/scheduler.mjs';
 import { DEFAULT_QUEUE, accountScope } from '../lib/queue-policy.mjs';
 import { randomUUID } from 'node:crypto';
 import { waitFor } from './helpers.mjs';
+import { setTimeout as delay } from 'node:timers/promises';
 const transfer = await import('../lib/config-transfer.mjs').catch(() => ({}));
 async function setup(t) { const environment = await enhancementSetup(t);assert.equal(typeof transfer.ConfigTransfer,'function','Missing safe configuration transfer');const config=new transfer.ConfigTransfer({...environment});return {...environment,config}; }
+
+for (const [name, reject] of [
+  ['plan validation', ({ favorites, favorite }) => favorites.savePlan({ favoriteIds: [favorite.id], kinds: ['fingerprint'] })],
+  ['settings conflict', ({ settings }) => settings.save({ expectedRevision: settings.snapshot().revision + 1, patch: { progressNotice: { enabled: false } } })],
+  ['note validation', ({ annotations }) => annotations.save({ runId: randomUUID(), expectedRunRevision: 0, note: '字'.repeat(2001) })],
+  ['empty submission', ({ runner }) => runner.submit({ kind: 'candy', targets: [] })],
+]) test(`configuration import recovers after a handled ${name} rejection`, async t => {
+  const env = await setup(t), favorite = await env.favorites.save({ modelId: 'fixture/one' });
+  await assert.rejects(reject({ ...env, favorite }), error => [400, 409].includes(error.status));
+  const preview = await env.config.preview({ document: env.config.export() });
+  assert.ok(preview.token);
+  assert.equal((await env.config.apply({ token: preview.token, confirm: true })).applied, true);
+  assert.equal(env.seen.length, 0);
+});
+
+for (const name of ['favorites', 'annotations']) test(`unhealthy ${name} blocks all configuration transfer operations without a rejected queue tail`, async t => {
+  const env = await setup(t), document = env.config.export(), preview = await env.config.preview({ document });
+  env[name].file.pause('unreadable private state');
+  assert.throws(() => env.config.export(), error => error.status === 503);
+  await assert.rejects(env.config.preview({ document }), error => error.status === 503);
+  await assert.rejects(env.config.apply({ token: preview.token, confirm: true }), error => error.status === 503);
+  assert.equal(env.seen.length, 0);
+});
 
 test('configuration preview returns a validation error for a target without an account', async t => {
   const { favorites, config } = await setup(t); await favorites.save({ modelId: 'fixture/one' });
@@ -93,6 +117,55 @@ test('configuration maintenance drains an already accepted favorite dispatch bef
   await runner.cancel(result.runs[0].id); runner.schedulingPaused--;
 });
 
+test('closing drains an accepted import that is waiting for an earlier favorite write', async t => {
+  const { favorites, settings, config } = await setup(t), document = config.export();
+  document.payload.settings.progressNotice.enabled = false; document.digest = transfer.configDigest(document.payload);
+  const preview = await config.preview({ document, choices: { settings: { progressNotice: 'overwrite' } } });
+  let release; const gate = new Promise(resolve => { release = resolve; });
+  favorites.dispatches = gate;
+  const applying = config.apply({ token: preview.token, confirm: true }).then(value => ({ value }), error => ({ error }));
+  await waitFor(() => config.maintaining);
+  let closed = false; const closing = config.close().then(() => { closed = true; });
+  try {
+    await delay(20);
+    assert.equal(closed, false, 'Close waits while the accepted import is draining earlier writes');
+  } finally { release(); }
+  const result = await applying; await closing;
+  assert.equal(result.error, undefined, 'Closing must not revoke an import that already acquired the maintenance lock');
+  assert.equal(result.value.applied, true);
+  assert.equal(settings.snapshot().progressNotice.enabled, false);
+});
+
+for (const { name, preparation, save } of [
+  { name: 'favorite save', preparation: 'models', save: ({ favorites }) => favorites.save({ modelId: 'fixture/two', maxTokens: 2400 }) },
+  { name: 'pinned account validation', preparation: 'assertAccount', save: ({ favorites }) => favorites.save({ modelId: 'fixture/two', account: { mode: 'pinned', id: 'a' }, maxTokens: 2400 }) },
+  { name: 'favorite management', preparation: 'models', save: ({ favorites, favorite }) => favorites.manage({ edits: [{ id: favorite.id, modelId: favorite.modelId, maxTokens: 2400 }] }) },
+  { name: 'plan parameter save', preparation: 'models', save: ({ favorites, plan }) => favorites.savePlan({ ...plan, times: ['10:00'], parameters: { maxTokens: 2400 } }) },
+]) test(`configuration maintenance waits for accepted ${name} before rejecting a stale preview`, async t => {
+  const env = await setup(t), { favorites, runner, gateway, config, dir, seen } = env;
+  const favorite = await favorites.save({ modelId: 'fixture/one' });
+  const plan = await favorites.savePlan({ favoriteIds: [favorite.id], kinds: ['candy'], enabled: false });
+  const preview = await config.preview({ document: config.export() });
+  const settingsBefore = await readFile(join(dir, '.settings/state.json'));
+  let release, entered = false; const gate = new Promise(resolve => { release = resolve; });
+  const original = gateway[preparation]; runner.catalogAt = 0;
+  t.mock.method(gateway, preparation, async function (...args) { entered = true; await gate; return original.apply(this, args); });
+  const saving = save({ ...env, favorite, plan }).then(value => ({ value }), error => ({ error }));
+  try {
+    await waitFor(() => entered);
+    let completed = false;
+    const applying = config.apply({ token: preview.token, confirm: true }).then(value => { completed = true; return { value }; }, error => { completed = true; return { error }; });
+    await Promise.race([applying, delay(100)]); const completedWhileSaving = completed;
+    release(); const saved = await saving, applied = await applying;
+    assert.equal(completedWhileSaving, false, 'Import completed while an accepted configuration save was still preparing');
+    assert.equal(saved.error, undefined); assert.equal(applied.error?.status, 409);
+    assert.deepEqual(await readFile(join(dir, '.settings/state.json')), settingsBefore);
+    assert.deepEqual(JSON.parse(await readFile(favorites.path, 'utf8')), favorites.state);
+    assert.ok(favorites.state.favorites.some(item => item.maxTokens === 2400));
+    assert.equal(config.maintaining, false); assert.equal(runner.maintenance, false); assert.equal(seen.length, 0);
+  } finally { release(); await saving; }
+});
+
 test('shorter imported retention requires the same fixed impact confirmation', async t => {
   const {config}=await setup(t),doc=config.export();doc.payload.settings.retention={days:1};doc.digest=transfer.configDigest(doc.payload);
   const preview=await config.preview({document:doc,choices:{settings:{retention:'overwrite'}}});assert.ok(preview.retentionImpact);
@@ -145,6 +218,15 @@ test('ordinary IO failure after committed adopts the complete new state and perm
   const result=await config.apply({token:preview.token,confirm:true});
   assert.equal(result.applied,true);assert.equal(settings.snapshot().progressNotice.enabled,false);
   await settings.save({expectedRevision:settings.snapshot().revision,patch:{progressNotice:{enabled:true}}});
+});
+
+test('successful configuration imports do not accumulate completed recovery snapshots', async t => {
+  const { config, dir } = await setup(t);
+  for (let index = 0; index < 3; index++) {
+    const preview = await config.preview({ document: config.export() });
+    await config.apply({ token: preview.token, confirm: true });
+  }
+  assert.deepEqual(await readdir(join(dir, '.imports')), [], 'Completed snapshots and archived journals have no later recovery use');
 });
 
 test('runner rejects new mutations while committing configuration maintenance', async t => {

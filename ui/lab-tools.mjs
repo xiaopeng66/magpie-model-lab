@@ -191,6 +191,7 @@ export function createLabTools({ document, $, api, settingsUI, openDrawer, close
     body.append(node('p', '统计本插件实际发出的请求，删除历史不会减少用量。Token 以接口返回值为准。', 'help'));
     const toolbar = node('div', undefined, 'phase-usage-toolbar'), date = node('p', '正在读取今日用量…', 'help'), refreshButton = button('刷新今日用量', refresh), feedback = status(body);
     toolbar.append(date, refreshButton); body.insertBefore(toolbar, summary); feedback.hidden = true;
+    let hasSummary = false;
     const format = value => value == null ? '—' : Number(value).toLocaleString('zh-CN');
     const compact = value => {
       if (value == null) return '未提供';
@@ -208,30 +209,38 @@ export function createLabTools({ document, $, api, settingsUI, openDrawer, close
     const accountName = (provider, id) => accountLabel(records().find(run => run.provider === provider && run.accountTarget?.id === id)?.accountTarget) || accountLabel({ mode: 'pinned', id });
     async function refresh() {
       if (refreshButton.disabled || !body.isConnected) return; refreshButton.disabled = true;
+      if (!hasSummary) date.textContent = '正在读取今日用量…';
+      feedback.hidden = true;
       try {
         const value = await api('api/usage'); if (!body.isConnected) return; if (!value) throw Error('当前服务未提供今日用量');
-        summary.replaceChildren(); feedback.hidden = true; date.textContent = `${value.day} · 本机时区 ${value.timeZone}`;
-        const metrics = node('div', undefined, 'phase-usage-grid');
-        for (const [label, count] of [['今日请求', value.knownRequests], ['已知 Token', value.tokens], ['未返回 Token', value.unknownUsage || 0]]) { const metric = node('div', undefined, 'phase-usage-metric'); metric.append(node('span', label, 'help'), node('strong', format(count))); metrics.append(metric); }
-        summary.append(metrics);
-        const details = value.tokenDetails || {}, tokenLine = node('div', undefined, 'phase-usage-tokens'); tokenLine.setAttribute('aria-label', '今日 Token 明细');
-        const fields = [['输入', details.input], ['输出', details.output], ['缓存读取', details.cacheRead]];
-        if (details.cacheWriteRequests > 0) fields.push(['缓存写入', details.cacheWrite]);
-        fields.push(['命中率', details.cacheHitRate]);
-        for (const [label, count] of fields) {
-          const item = node('span', undefined, 'phase-usage-token');
-          const text = label === '命中率' ? count == null ? '未提供' : `${(count * 100).toFixed(2)}%` : compact(count);
-          item.title = label === '命中率' ? '缓存读取 ÷ 含缓存输入，仅按有有效明细的请求计算' : `${label} ${count == null ? '未提供' : format(count) + ' Token'}${label === '输入' ? '（含缓存）' : ''}`;
-          item.setAttribute('aria-label', label === '命中率' ? `${label} ${text}；${item.title}` : item.title);
-          item.append(node('span', label), node('strong', text)); tokenLine.append(item);
+        if (value.recoveryError && value.knownRequests === 0) throw Error(value.recoveryError);
+        summary.replaceChildren(); date.textContent = `${value.day} · 本机时区 ${value.timeZone}`;
+        if (value.knownRequests > 0) {
+          const metrics = node('div', undefined, 'phase-usage-grid');
+          for (const [label, count] of [['今日请求', value.knownRequests], ['已知 Token', value.tokens], ['未返回 Token', value.unknownUsage || 0]]) {
+            const metric = node('div', undefined, 'phase-usage-metric');
+            metric.append(node('span', label, 'help'), node('strong', format(count))); metrics.append(metric);
+          }
+          const details = value.tokenDetails || {}, tokenLine = node('div', undefined, 'phase-usage-tokens');
+          tokenLine.setAttribute('aria-label', '今日 Token 明细');
+          const fields = [['输入', details.input], ['输出', details.output], ['缓存读取', details.cacheRead]];
+          if (details.cacheWriteRequests > 0) fields.push(['缓存写入', details.cacheWrite]);
+          fields.push(['命中率', details.cacheHitRate]);
+          for (const [label, count] of fields) {
+            const item = node('span', undefined, 'phase-usage-token');
+            const text = label === '命中率' ? count == null ? '未提供' : `${(count * 100).toFixed(2)}%` : compact(count);
+            item.title = label === '命中率' ? '缓存读取 ÷ 含缓存输入，仅按有有效明细的请求计算' : `${label} ${count == null ? '未提供' : format(count) + ' Token'}${label === '输入' ? '（含缓存）' : ''}`;
+            item.setAttribute('aria-label', label === '命中率' ? `${label} ${text}；${item.title}` : item.title);
+            item.append(node('span', label), node('strong', text)); tokenLine.append(item);
+          }
+          const coverage = details.cacheCoverageRequests || 0;
+          summary.append(metrics, tokenLine, node('p', `缓存明细覆盖 ${coverage}/${value.knownRequests} 次请求；输入含缓存，命中率按有效明细的 Token 数加权。`, 'help'));
+        } else {
+          summary.append(node('p', '今日暂无测试请求。', 'help'));
         }
-        summary.append(tokenLine);
-        const coverage = details.cacheCoverageRequests || 0;
-        if (value.knownRequests > 0) summary.append(node('p', `缓存明细覆盖 ${coverage}/${value.knownRequests} 次请求；输入含缓存，命中率按有效明细的 Token 数加权。`, 'help'));
         if (value.partial) summary.append(node('p', `今日统计从 ${new Date(value.coverageStartAt).toLocaleTimeString('zh-CN')} 开始，未覆盖此前的请求。`, 'help'));
         if (value.unknownUsage) summary.append(node('p', `${format(value.unknownUsage)} 次请求尚未提供完整 Token，已知 Token 只合计已返回的用量。`, 'help'));
         if (value.usageNeedsReview || value.possibleUnsent) summary.append(node('p', '部分请求的用量或发出状态需要核实，统计保留已观测值。', 'help'));
-        summary.append(node('h4', '来源明细', 'phase-usage-heading'));
         const rows = node('div', undefined, 'phase-usage-list');
         for (const item of value.providers || []) {
           const row = node('div', undefined, 'phase-usage-row'), accounts = (value.accounts || []).filter(account => account.provider === item.provider);
@@ -239,14 +248,25 @@ export function createLabTools({ document, $, api, settingsUI, openDrawer, close
           for (const account of accounts) row.append(usageRow(`固定账号 · ${accountName(item.provider, account.accountId)}`, account, true));
           const automaticRequests = item.knownRequests - accounts.reduce((sum, account) => sum + account.knownRequests, 0);
           if (automaticRequests > 0) {
-            const known = (item.knownUsage ?? item.knownRequests - (item.unknownUsage || 0)) - accounts.reduce((sum, account) => sum + (account.knownUsage ?? account.knownRequests - (account.unknownUsage || 0)), 0);
-            row.append(usageRow('自动分配', { knownRequests: automaticRequests, tokens: known ? Math.max(0, (item.tokens || 0) - accounts.reduce((sum, account) => sum + (account.tokens || 0), 0)) : null }, true));
+            const automaticKnownUsage = (item.knownUsage ?? item.knownRequests - (item.unknownUsage || 0)) - accounts.reduce((sum, account) => sum + (account.knownUsage ?? account.knownRequests - (account.unknownUsage || 0)), 0);
+            const fixedTokensKnown = accounts.every(account => {
+              const requests = account.knownRequests || 0;
+              const known = account.knownUsage ?? requests - (account.unknownUsage || 0);
+              return known === requests && (requests === 0 || account.tokens != null);
+            });
+            const tokens = automaticKnownUsage > 0 && item.tokens != null && fixedTokensKnown ? Math.max(0, item.tokens - accounts.reduce((sum, account) => sum + (account.tokens ?? 0), 0)) : null;
+            row.append(usageRow('自动分配', { knownRequests: automaticRequests, tokens }, true));
           }
           rows.append(row);
         }
-        if (!rows.children.length) rows.append(node('p', '今日暂无供应商请求。', 'help')); summary.append(rows);
+        if (rows.children.length) summary.append(node('h4', '来源明细', 'phase-usage-heading'), rows);
+        hasSummary = true;
         if (value.recoveryError) { feedback.textContent = value.recoveryError; feedback.hidden = false; }
-      } catch (error) { if (body.isConnected) { feedback.textContent = `${error.message}；已保留上次统计，可重试。`; feedback.hidden = false; } }
+      } catch (error) {
+        if (!body.isConnected) return;
+        if (!hasSummary) date.textContent = '今日用量暂不可用';
+        feedback.textContent = `${error.message}；${hasSummary ? '已保留上次统计，' : ''}可重试。`; feedback.hidden = false;
+      }
       finally { if (body.isConnected) refreshButton.disabled = false; }
     }
     return refresh;
@@ -261,18 +281,63 @@ export function createLabTools({ document, $, api, settingsUI, openDrawer, close
   function openConfigImport() {
     const panel = opening('导入配置', $('local-settings')), body = panel.content, file = field(body, '选择配置 JSON · 最大 2 MiB', '', 'file'); file.accept = '.json,application/json';
     const choicesHost = node('div', undefined, 'phase-import-choices'), previewHost = node('div', undefined, 'phase-import-preview'), feedback = status(body); body.append(choicesHost, previewHost);
+    const settingLabels = { manual: '手动参数', presets: '常用参数方案', retention: '历史保留', progressNotice: '运行提醒', queue: '请求控制' };
+    const planLabels = { candy: '糖果计划', pelican: '动画计划' };
+    const actionLabels = { add: '新增', keep: '保留本地', overwrite: '覆盖参数', skip: '跳过' };
+    const issueLabels = { binding: '需要选择账号绑定', fingerprint_binding: '需要选择旧指纹账号绑定', duplicate_target: '目标重复，请跳过其中一个', model_unavailable: '模型当前不可用', account_unavailable: '账号当前不可用' };
+    const object = value => value && typeof value === 'object' && !Array.isArray(value);
+    let targetLabels = new Map();
+    function validateDraft(value) {
+      const payload = value?.payload;
+      if (value?.schema !== 'model-lab-config-v1' || !object(payload) || !object(payload.settings) || !Array.isArray(payload.favorites) || !Array.isArray(payload.plans)) {
+        throw Error('不是支持的模型实验室配置文件');
+      }
+      if (payload.favorites.length > 500 || payload.plans.length > 1000) throw Error('配置超过 500 个目标或 1000 个计划');
+      if (Object.keys(payload.settings).some(key => key !== 'budget' && !Object.hasOwn(settingLabels, key))) throw Error('配置包含未知的本地设置');
+      const targetRefs = new Set(), planRefs = new Set();
+      for (const item of payload.favorites) {
+        if (typeof item?.sourceRef !== 'string' || !/^target-\d+$/.test(item.sourceRef) || targetRefs.has(item.sourceRef) ||
+            typeof item.modelId !== 'string' || !item.modelId.trim() || !object(item.account)) throw Error('配置目标标识、模型或账号无效');
+        targetRefs.add(item.sourceRef);
+      }
+      for (const plan of payload.plans) {
+        if (typeof plan?.sourceRef !== 'string' || !/^plan-\d+$/.test(plan.sourceRef) || planRefs.has(plan.sourceRef) ||
+            !targetRefs.has(plan.favoriteRef) || !Object.hasOwn(planLabels, plan.kind)) throw Error('配置计划标识或关联目标无效');
+        planRefs.add(plan.sourceRef);
+      }
+      return payload;
+    }
     let documentValue = null, choices = null, bindings = null, preview = null, readRevision = 0, choiceRevision = 0, previewRequest = 0;
     const invalidate = () => { choiceRevision++; preview = null; apply.disabled = true; previewHost.replaceChildren(); feedback.textContent = '选择已变化，请重新预览'; };
     const previewButton = button('预览配置差异', async () => {
       if (!documentValue) return; previewButton.disabled = true;
       const revision = choiceRevision, requestVersion = ++previewRequest, input = structuredClone({ document: documentValue, choices, bindings });
-      try { const memory = await settingsUI.flush(); if (!panel.alive() || revision !== choiceRevision) return; if (memory.state !== 'saved') throw new Error('请先完成当前参数保存，再预览配置'); const result = await post('api/config/import/preview', input); if (!panel.alive() || revision !== choiceRevision) return; preview = result; previewHost.replaceChildren(); previewHost.append(node('p', `目标变化 ${preview.differences.length} 项 · ${preview.pausedPlanIds.length} 个受影响或新计划将暂停`, 'help')); for (const difference of preview.differences) previewHost.append(node('p', `${difference.sourceRef} · ${difference.action}`, 'help')); for (const issue of preview.unresolved) previewHost.append(node('p', `${issue.modelId || issue.sourceRef} · ${issue.reason || ({ binding: '需要选择账号绑定', fingerprint_binding: '需要选择旧指纹账号绑定', duplicate_target: '目标重复，请跳过其中一个', model_unavailable: '模型当前不可用', account_unavailable: '账号当前不可用' })[issue.code] || issue.code}`, 'form-error')); if (preview.retentionImpact) previewHost.append(node('p', `保留期限缩短为 ${preview.retentionImpact.days} 天；固定预览时点有 ${preview.retentionImpact.candidateCount} 条到期候选。保存后未来到期记录也适用。`, 'help')); apply.disabled = !preview.token; feedback.textContent = preview.token ? '差异已预览，5 分钟内可确认应用' : '请解决上述绑定或目标问题，再次预览'; }
+      try {
+        const memory = await settingsUI.flush(); if (!panel.alive() || revision !== choiceRevision) return;
+        if (memory.state !== 'saved') throw Error('请先完成当前参数保存，再预览配置');
+        const result = await post('api/config/import/preview', input); if (!panel.alive() || revision !== choiceRevision) return;
+        preview = result; previewHost.replaceChildren();
+        previewHost.append(node('p', `已核对 ${preview.differences.length} 个目标。`, 'help'));
+        if (preview.pausedPlanIds.length) previewHost.append(node('p', `${preview.pausedPlanIds.length} 个新建或受影响的计划会在导入后暂停。`, 'help'));
+        for (const { sourceRef, action } of preview.differences) {
+          previewHost.append(node('p', `${targetLabels.get(sourceRef) || '目标'}：${actionLabels[action] || '待核对'}`, 'help'));
+        }
+        for (const issue of preview.unresolved) {
+          const title = targetLabels.get(issue.sourceRef) || issue.modelId || '目标';
+          previewHost.append(node('p', `${title}：${issue.reason || issueLabels[issue.code] || '请核对目标设置'}`, 'form-error'));
+        }
+        if (preview.retentionImpact) previewHost.append(node('p', `保留期限缩短为 ${preview.retentionImpact.days} 天。预览时有 ${preview.retentionImpact.candidateCount} 条到期记录，未来到期的记录也会按新期限清理。`, 'help'));
+        apply.disabled = !preview.token;
+        feedback.textContent = preview.token ? '差异已预览，5 分钟内可确认应用' : '请解决上述绑定或目标问题，再次预览';
+      }
       catch (error) { if (!panel.alive() || revision !== choiceRevision) return; feedback.textContent = error.message; preview = null; apply.disabled = true; }
       finally { if (panel.alive() && requestVersion === previewRequest) previewButton.disabled = !documentValue; }
-    }, 'primary'); previewButton.disabled = true;
+    }); previewButton.disabled = true;
     const apply = button('确认应用导入', async () => {
       if (!preview?.token || apply.disabled) return; const selectedPreview = preview;
-      if (!await confirmAction('应用导入配置', `${selectedPreview.pausedPlanIds.length} 个受影响或新计划将暂停。${selectedPreview.retentionImpact ? `保留期限将缩短，当前有 ${selectedPreview.retentionImpact.candidateCount} 条到期候选；下一清理周期和未来到期记录适用。` : ''}请确认已核对账号绑定与覆盖选择。`, '确认应用')) return;
+      const pauseNotice = selectedPreview.pausedPlanIds.length ? `${selectedPreview.pausedPlanIds.length} 个新建或受影响的计划会在导入后暂停。` : '';
+      const retentionNotice = selectedPreview.retentionImpact ? `保留期限将缩短，当前有 ${selectedPreview.retentionImpact.candidateCount} 条到期记录。下次清理起按新期限执行。` : '';
+      if (!await confirmAction('应用导入配置', `${pauseNotice}${retentionNotice}请确认已核对账号绑定与覆盖选择。`, '确认应用')) return;
       if (preview !== selectedPreview || !panel.alive()) return; apply.disabled = previewButton.disabled = true;
       try { await post('api/config/import/apply', { token: selectedPreview.token, confirm: true, confirmRetention: Boolean(selectedPreview.retentionImpact) }); await settingsUI.refresh(); await onUpdated(); if (panel.alive()) { feedback.textContent = '配置已应用；受影响或新计划保持暂停，请逐项核对后启用。'; preview = null; } }
       catch (error) { feedback.textContent = error.message + '；请重新预览'; preview = null; }
@@ -282,13 +347,23 @@ export function createLabTools({ document, $, api, settingsUI, openDrawer, close
       const selected = file.files?.[0], revision = ++readRevision; invalidate(); choicesHost.replaceChildren(); documentValue = null; previewButton.disabled = true;
       try {
         if (!selected || selected.size > 2 * 1024 * 1024) throw new Error('请选择 2 MiB 内的配置 JSON'); const value = JSON.parse(await selected.text()); if (!panel.alive() || revision !== readRevision) return;
-        if (value?.schema !== 'model-lab-config-v1' || !value.payload || !Array.isArray(value.payload.favorites) || !Array.isArray(value.payload.plans)) throw new Error('不是支持的模型实验室配置文件');
-        documentValue = value; choices = { settings: {}, targets: {}, plans: {} }; bindings = {};
-        const settings = section(choicesHost, '本地设置选择'), settingsGrid = columns(settings);
-        for (const key of Object.keys(value.payload.settings || {}).filter(key => key !== 'budget')) { const labels = { manual: '手动参数', presets: '常用参数方案', retention: '历史保留', progressNotice: '运行提醒', queue: '请求控制' }, input = select(settingsGrid, labels[key] || key, [['keep', '保留本地'], ['overwrite', '使用导入值'], ...(key === 'presets' ? [['merge', '按名称合并方案']] : [])], 'keep'); input.addEventListener('change', () => { choices.settings[key] = input.value; invalidate(); }); }
+        const payload = validateDraft(value);
+        const names = new Map(models().map(model => [model.id, model.name || model.id]));
+        targetLabels = new Map(payload.favorites.map(({ sourceRef, modelId }) => [sourceRef, `目标 ${sourceRef.slice(7)} · ${names.get(modelId) || modelId}`]));
+        documentValue = value;
+        choices = { settings: Object.create(null), targets: Object.create(null), plans: Object.create(null) };
+        bindings = Object.create(null);
+        const settingKeys = Object.keys(payload.settings).filter(key => key !== 'budget');
+        if (settingKeys.length) {
+          const settingsGrid = columns(section(choicesHost, '本地设置选择'));
+          for (const key of settingKeys) {
+            const input = select(settingsGrid, settingLabels[key], [['keep', '保留本地'], ['overwrite', '使用导入值'], ...(key === 'presets' ? [['merge', '按名称合并方案']] : [])], 'keep');
+            input.addEventListener('change', () => { choices.settings[key] = input.value; invalidate(); });
+          }
+        }
         const accountCache = new Map(), accounts = modelId => { if (!accountCache.has(modelId)) accountCache.set(modelId, api('api/accounts?provider=' + encodeURIComponent(modelId.split('/')[0]) + '&model=' + encodeURIComponent(modelId))); return accountCache.get(modelId); };
-        for (const item of value.payload.favorites) {
-          const target = section(choicesHost, `${item.modelId} · ${item.sourceRef}`), action = select(target, '目标冲突选择', [['keep', '保留本地；新目标则新增'], ['overwrite', '覆盖同目标参数'], ['skip', '跳过此目标']], 'keep'); action.addEventListener('change', () => { choices.targets[item.sourceRef] = action.value; invalidate(); });
+        for (const item of payload.favorites) {
+          const target = section(choicesHost, targetLabels.get(item.sourceRef)), action = select(target, '目标冲突选择', [['keep', '保留本地；新目标则新增'], ['overwrite', '覆盖同目标参数'], ['skip', '跳过此目标']], 'keep'); action.addEventListener('change', () => { choices.targets[item.sourceRef] = action.value; invalidate(); });
           for (const [key, accountValue] of [['account', item.account], ['fingerprintAccount', item.fingerprintAccount]]) if (accountValue?.mode === 'rebind') {
             const input = select(target, key === 'account' ? '导入目标账号绑定' : '旧指纹账号绑定', [['', '请选择绑定'], ['auto', '自动分配']], '');
             const accountHint = status(target); accountHint.hidden = true;
@@ -297,7 +372,13 @@ export function createLabTools({ document, $, api, settingsUI, openDrawer, close
           }
           else if (accountValue?.mode === 'pinned') target.append(node('p', `原固定账号：${accountLabel(accountValue)}`, 'help'));
         }
-        const plans = section(choicesHost, '计划冲突选择'); for (const item of value.payload.plans) { const input = select(plans, `${item.favoriteRef} · ${item.kind} · ${item.sourceRef}`, [['keep', '保留本地；新计划则暂停新增'], ['overwrite', '使用导入计划并暂停'], ['skip', '跳过计划']], 'keep'); input.addEventListener('change', () => { choices.plans[item.sourceRef] = input.value; invalidate(); }); }
+        if (payload.plans.length) {
+          const plans = section(choicesHost, '计划冲突选择');
+          for (const item of payload.plans) {
+            const input = select(plans, `${targetLabels.get(item.favoriteRef)} · ${planLabels[item.kind]}`, [['keep', '保留本地；新计划则暂停新增'], ['overwrite', '使用导入计划并暂停'], ['skip', '跳过计划']], 'keep');
+            input.addEventListener('change', () => { choices.plans[item.sourceRef] = input.value; invalidate(); });
+          }
+        }
         if (!panel.alive() || revision !== readRevision) return; previewButton.disabled = false; feedback.textContent = '配置已读取，请选择绑定与冲突处理，再预览完整候选。';
       } catch (error) { if (panel.alive() && revision === readRevision) feedback.textContent = error.message; }
     });

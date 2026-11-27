@@ -27,6 +27,28 @@ test("candy grades only an explicit unambiguous final answer, never a number in 
   assert.equal(candy.classifyCandy("最终答案：21", "").status, "error");
 });
 
+test("candy keeps rounded or conflicting decimal conclusions under review", () => {
+  for (const reply of [
+    "最终答案：21.00000000000000000001",
+    "最终答案：20.99999999999999999999",
+    "最终答案：21\n最终答案：21.00000000000000000001",
+    "最终答案：9007199254740993",
+  ]) {
+    const result = candy.classifyCandy(reply, "stop");
+    assert.equal(result.candy.verdict, "review", reply);
+    assert.equal(result.candy.answer, null, reply);
+  }
+  for (const [reply, verdict, answer] of [
+    ["最终答案：+00021.000\n最终答案：21", "match", 21],
+    ["最终答案：21.50", "mismatch", 21.5],
+    ["最终答案：-0.00\n最终答案：+000.000", "mismatch", 0],
+  ]) {
+    const result = candy.classifyCandy(reply, "stop");
+    assert.equal(result.candy.verdict, verdict, reply);
+    assert.equal(result.candy.answer, answer, reply);
+  }
+});
+
 test("candy runner sends a fixed independent question and restores evidence without HTML previews", async t => {
   const dir = await temporary(t), upstream = await fakeGateway(t, ({ complete }) => complete("策略与下界。\n最终答案：21"));
   const store = new RunStore(dir); await store.init();

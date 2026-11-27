@@ -53,6 +53,28 @@ test('releasing an unsent request leaves a certain zero while unknown issued tok
   assert.equal(usage.summary().knownRequests, 1); assert.equal(usage.summary().tokens, null); assert.equal(usage.summary().unknownUsage, 1);
 });
 
+test('the ledger keeps accepting requests after an unrepresentable token total is archived', async t => {
+  let at = Date.parse('2026-11-23T10:00:00Z'); const { dir, usage } = await ledger(t, () => at);
+  await issue(usage, request('fixture', ''), Number.MAX_SAFE_INTEGER);
+  await issue(usage, request(), 1);
+  assert.equal(usage.summary().providers[0].tokens, null);
+
+  at += 4 * 86400000;
+  await issue(usage, request(), 30);
+  await usage.close();
+  const restored = new UsageLedger(dir, { now: () => at, timeZone: 'UTC' });
+  t.after(() => restored.close()); await restored.init();
+  assert.equal(restored.recoveryError, '');
+  assert.equal(restored.summary().tokens, 30);
+
+  at += 4 * 86400000;
+  await issue(restored, request(), 45);
+  assert.equal(restored.summary().tokens, 45);
+  const { archive } = JSON.parse(await readFile(join(dir, '.budgets', 'state.json'), 'utf8'));
+  assert.equal(archive.requests, 3);
+  assert.equal(archive.tokens, null);
+});
+
 test('stored quota configuration is migrated away without changing manual parameters or queue rules', async t => {
   const dir = await temporary(t), settings = new Settings(dir); await settings.init();
   const before = settings.snapshot(); await settings.close();

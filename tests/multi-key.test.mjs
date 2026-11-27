@@ -118,6 +118,17 @@ test('malformed local configuration preserves registered accounts and refuses ol
   await assert.rejects(gateway.assertAccount('fixture', target(spareKey), 'fixture/one'), /账号|Key/);
 });
 
+test('registered accounts keep routing but hide upstream diagnostics while local credentials cannot be read', async t => {
+  const { gateway, configDir } = await setup(t);
+  const account = { mode: 'pinned', id: 'a' };
+  await writeFile(join(configDir, 'providers.json'), '{');
+  const pinned = await gateway.resolveAccount('fixture/one', account);
+  const automatic = await gateway.resolveAccount('fixture/one', { mode: 'auto' });
+  assert.equal(pinned.header, 'a');
+  assert.equal(pinned.redact('上游诊断'), automatic.redact('上游诊断'));
+  assert.match(pinned.redact('上游诊断'), /已隐藏上游详情/);
+});
+
 test('HTTP and stream errors cannot expose configured ordinary Keys, including credentials without a sk prefix', async t => {
   let streaming = false;
   const { gateway } = await setup(t, { handler: ({ res }) => {
